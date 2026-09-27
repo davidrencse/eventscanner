@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: citysignal-nyc
+    runtime: node
+    plan: 0.5c-512mb
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    buildFilter:
+      ignoredPaths:
+        - data/**
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GITHUB_SYNC
+        value: '1'
+      - key: GITHUB_REPOSITORY
+        sync: false
+      - key: GITHUB_BRANCH
+        value: main
+      - key: GITHUB_TOKEN
+        sync: false

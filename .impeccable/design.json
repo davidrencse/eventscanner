@@ -1,0 +1,17 @@
+{
+  "name": "Citysignal",
+  "mode": "operate",
+  "colors": {
+    "ground": "#090909",
+    "panel": "#161616",
+    "ink": "#f5f5f2",
+    "quiet": "#c8c8c5",
+    "dim": "#a4a4a0",
+    "rule": "#3d3d3b"
+  },
+  "type": {
+    "display": "Archivo",
+    "body": "DM Sans"
+  },
+  "layout": "Monochrome masthead, search console, quick date choices, and calendar-like event rows"
+}
