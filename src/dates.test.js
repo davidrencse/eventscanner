@@ -19,6 +19,7 @@ test('sunday stays on the current weekend', () => {
 
 test('today and the next seven days follow New York time', () => {
   const now = new Date('2026-09-24T23:30:00-04:00');
+  assert.equal(dateMatches('2026-09-23T12:00:00-04:00', 'Next 7 days', now), false);
   assert.equal(dateMatches('2026-09-25T00:30:00-04:00', 'Today', now), false);
   assert.equal(dateMatches('2026-09-24T23:45:00-04:00', 'Today', now), true);
   assert.equal(dateMatches(new Date(now.getTime() + 7 * 86400000).toISOString(), 'Next 7 days', now), true);

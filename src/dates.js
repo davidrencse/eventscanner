@@ -28,7 +28,7 @@ export function dateMatches(start, filter, now = new Date()) {
     return nyDateKey(eventTime) === nyDateKey(nowDate) && hour >= 17;
   }
   if (filter === 'Tomorrow') return nyDateKey(eventTime) === shiftDateKey(nyDateKey(nowDate), 1);
-  if (filter === 'Next 7 days') return eventTime <= nowDate.getTime() + 7 * 86400000;
+  if (filter === 'Next 7 days') return eventTime >= nowDate.getTime() && eventTime <= nowDate.getTime() + 7 * 86400000;
   if (filter === 'This weekend') return weekendKeys(nowDate).includes(nyDateKey(eventTime));
   return true;
 }

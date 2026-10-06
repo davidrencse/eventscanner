@@ -1,0 +1,18 @@
+[Unit]
+Description=Citysignal NYC event scanner and web server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/citysignal
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=GITHUB_SYNC=0
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

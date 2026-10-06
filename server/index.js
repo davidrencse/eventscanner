@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishScan } from './recon.js';
+import { buildRecommendations, loadPreferences, writeRecommendations } from './pipeline.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -13,6 +14,8 @@ const RECON_INTERVAL = 15 * 60 * 1000;
 const SOURCES = [
   { name: 'Luma', url: 'https://api.luma.com/discover/get-paginated-events', parse: parseLuma, kind: 'luma-api' },
   { name: 'Luma', url: 'https://luma.com/nyc', parse: parseLuma },
+  { name: 'Luma', url: 'https://luma.com/discover/nyc/tech', parse: parseLuma },
+  { name: 'Luma', url: 'https://luma.com/discover/nyc/ai', parse: parseLuma },
   { name: 'Partiful', url: 'https://partiful.com/explore/NYC', parse: parsePartiful },
   { name: 'Partiful', url: 'https://partiful.com/explore/partilist', parse: parsePartiful },
   { name: 'NYC Parks', url: 'https://data.cityofnewyork.us/resource/w3wp-dpdi.json', kind: 'parks-api' },
@@ -29,6 +32,8 @@ let pending = null;
 let pendingIsForced = false;
 const pageCache = new Map();
 let eventbriteCooldownUntil = 0;
+const pipelineHealth = { running: false, lastStartedAt: null, lastCompletedAt: null, lastError: null, nextRunAt: null };
+let lastManualRefresh = 0;
 const nyDayFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
 const nyDay = value => nyDayFormatter.format(new Date(value));
 const nyOffsetFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' });
@@ -93,7 +98,7 @@ function ldEvents(html) {
   const visit = value => {
     if (Array.isArray(value)) return value.forEach(visit);
     if (!value || typeof value !== 'object') return;
-    if (value['@type'] === 'Event' || (Array.isArray(value['@type']) && value['@type'].includes('Event'))) results.push(value);
+    if ((value['@type'] === 'Event' || (Array.isArray(value['@type']) && value['@type'].includes('Event'))) && !/EventCancelled|EventPostponed/.test(value.eventStatus || '')) results.push(value);
     if (value['@graph']) visit(value['@graph']);
     if (value.itemListElement) visit(value.itemListElement);
     if (value.item) visit(value.item);
@@ -159,7 +164,7 @@ function mapsUrl({ latitude, longitude, query, href } = {}) {
   if (typeof href === 'string' && /^https:\/\/(?:www\.)?google\.com\/maps\//i.test(href)) return href;
   const lat = Number(latitude);
   const lng = Number(longitude);
-  if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0)) {
+  if (latitude != null && longitude != null && String(latitude).trim() && String(longitude).trim() && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0)) {
     return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
   }
   const text = cleanText(query);
@@ -185,7 +190,15 @@ function lumaPlace(geo = {}) {
 
 function offerSoldOut(offers) {
   const list = Array.isArray(offers) ? offers : offers ? [offers] : [];
-  return list.some(offer => /SoldOut/i.test(String(offer?.availability || '')));
+  return list.length > 0 && list.every(offer => /SoldOut/i.test(String(offer?.availability || '')));
+}
+
+function offerPrice(offers) {
+  const list = Array.isArray(offers) ? offers : offers ? [offers] : [];
+  const prices = list.map(offer => offer?.price).filter(price => price !== null && price !== undefined && price !== '' && Number.isFinite(Number(price)) && Number(price) >= 0).map(Number);
+  if (!prices.length) return null;
+  if (prices.some(price => price > 0)) return 'Paid';
+  return prices.length === list.length ? 'Free' : null;
 }
 
 function parseParks(rows) {
@@ -253,7 +266,7 @@ function parseLuma(html) {
       postalCode: location.address?.postalCode || '',
       image: imageUrl(event.image),
       organizer: (Array.isArray(event.organizer) ? event.organizer : [event.organizer]).filter(Boolean).map(item => item.name).filter(Boolean).join(', '),
-      price: Array.isArray(event.offers) && event.offers.length ? (event.offers.every(offer => Number(offer.price) === 0) ? 'Free' : 'Paid') : null,
+      price: offerPrice(event.offers),
       popularity: null,
       spotsLeft: spotCount(event.remainingAttendeeCapacity, offerSoldOut(event.offers)),
       availability: null,
@@ -292,7 +305,8 @@ async function fetchLumaFeed() {
           price: entry.ticket_info?.is_free === true ? 'Free' : entry.ticket_info?.is_free === false ? 'Paid' : null,
           popularity: entry.guest_count || null,
           spotsLeft: spotCount(entry.ticket_info?.spots_remaining, entry.ticket_info?.is_sold_out === true),
-          availability: null,
+          availability: entry.registration_availability || null,
+          approvalRequired: entry.ticket_info?.require_approval ?? null,
           mapsUrl: place.mapsUrl,
         }];
       }));
@@ -342,7 +356,7 @@ function parseEventbrite(html) {
       title: e.name, description: cleanText(e.description), summary: cleanText(e.description), start: dateValue(e.startDate), end: dateValue(e.endDate), timeKnown: !/^\d{4}-\d{2}-\d{2}$/.test(e.startDate || ''),
       venue: location.name || location.address?.streetAddress || 'New York City', locality: location.address?.addressLocality || '',
       postalCode: location.address?.postalCode || '',
-      image: imageUrl(e.image), organizer: e.organizer?.name || '', price: null, popularity: null,
+      image: imageUrl(e.image), organizer: e.organizer?.name || '', price: offerPrice(e.offers), popularity: null,
       spotsLeft: spotCount(e.remainingAttendeeCapacity, offerSoldOut(e.offers)), availability: null,
       mapsUrl: mapsUrl({ latitude: location.geo?.latitude, longitude: location.geo?.longitude, query: [location.address?.streetAddress || location.name, location.address?.addressLocality, location.address?.postalCode].filter(Boolean).join(', ') }),
     };
@@ -351,11 +365,12 @@ function parseEventbrite(html) {
   const found = assignedJson(html, 'window.__SERVER_DATA__')?.search_data?.events?.results;
   const results = Array.isArray(found) ? found : [];
   for (const item of results) {
-    if (!item.url || !item.name || item.is_online_event || item.is_cancelled || !item.primary_venue?.address) continue;
     const id = eventbriteId(item.url, item.eventbrite_event_id || item.id);
+    if (item.is_online_event || item.is_cancelled) { byId.delete(id); continue; }
+    if (!item.url || !item.name || !item.primary_venue?.address) continue;
     const previous = byId.get(id);
-    const start = nyLocalDate(`${item.start_date}T${item.start_time}:00`);
-    const end = nyLocalDate(`${item.end_date}T${item.end_time}:00`);
+    const start = nyLocalDate(`${item.start_date}T${item.start_time}`);
+    const end = nyLocalDate(`${item.end_date}T${item.end_time}`);
     const tags = Array.isArray(item.tags) ? item.tags : [];
     const description = cleanText([item.summary, ...tags.filter(tag => ['EventbriteFormat', 'EventbriteCategory', 'EventbriteSubCategory'].includes(tag.prefix)).map(tag => tag.display_name)].filter(Boolean).join(' '));
     byId.set(id, {
@@ -397,7 +412,7 @@ const RULES = [
   ['Business', /\b(business|career|professional|leadership|marketing|finance|investor|entrepreneur)\b/i],
 ];
 
-function enrich(e) {
+function enrich(e, now = Date.now()) {
   const title = e.title || '';
   const description = e.description || '';
   const organizer = e.organizer || '';
@@ -417,11 +432,11 @@ function enrich(e) {
   if (companies.length) tags.unshift('Big names');
   if (!tags.length) tags.push('Around town');
   const startTime = new Date(e.start).getTime();
-  const daysAway = Number.isFinite(startTime) ? Math.max(0, (startTime - Date.now()) / 86400000) : 0;
+  const daysAway = Number.isFinite(startTime) ? Math.max(0, (startTime - now) / 86400000) : 0;
   const popularity = Number(e.popularity);
   const popularityBoost = Number.isFinite(popularity) && popularity > 0 ? Math.min(8, Math.log10(popularity + 1) * 2.5) : 0;
   const score = Math.min(99, Math.round(50 + Math.max(0, 10 - daysAway * 0.35) + popularityBoost + (companies.length ? 4 : 0) + (tags.includes('Tech') ? 3 : 0) + socialScore + (tags.includes('Music & nightlife') ? 2 : 0)));
-  return { ...e, tags: [...new Set(tags)], companies, score };
+  return { ...e, tags: [...new Set(tags)], companies, score: e.spotsLeft === 0 || ['sold-out', 'waitlist', 'closed'].includes(e.availability) ? Math.max(0, score - 50) : score };
 }
 
 function mergeEvent(previous, next) {
@@ -439,6 +454,7 @@ function mergeEvent(previous, next) {
     postalCode: next.postalCode || previous.postalCode || '',
     spotsLeft: next.spotsLeft ?? previous.spotsLeft ?? null,
     availability: next.availability || previous.availability || null,
+    approvalRequired: next.approvalRequired ?? previous.approvalRequired ?? null,
     mapsUrl: next.mapsUrl || previous.mapsUrl || '',
     timeKnown: Boolean(next.timeKnown || previous.timeKnown),
     start: next.timeKnown || !previous.timeKnown ? (next.start || previous.start) : previous.start,
@@ -454,7 +470,7 @@ function isNycLocation(event) {
     if (!Number.isFinite(zip)) return false;
     return (zip >= 10000 && zip <= 10499) || (zip >= 11004 && zip <= 11005) || (zip >= 11100 && zip <= 11499) || (zip >= 11600 && zip <= 11699);
   }
-  return true;
+  return /\b(new york|nyc|manhattan|brooklyn|queens|bronx|staten island|astoria|williamsburg|bushwick|greenpoint|long island city|harlem|soho|tribeca|chelsea|flushing|ridgewood|dumbo|park slope|bed.?stuy|crown heights|lower east side|east village|west village|midtown|upper east side|upper west side)\b/.test(place);
 }
 
 function isUpcoming(event, now = Date.now()) {
@@ -468,8 +484,10 @@ async function fetchSource(source) {
   if (source.name === 'Eventbrite' && Date.now() < eventbriteCooldownUntil) throw new Error('Eventbrite is temporarily rate limited');
   const response = await fetch(source.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Citysignal/1.0; public-event-discovery)', 'Accept': 'text/html' }, signal: AbortSignal.timeout(18000) });
   if (source.name === 'Eventbrite' && response.status === 429) {
-    const retryAfter = Number(response.headers.get('retry-after'));
-    eventbriteCooldownUntil = Date.now() + Math.max(15 * 60000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0);
+    const header = response.headers.get('retry-after');
+    const seconds = Number(header);
+    const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+    eventbriteCooldownUntil = Date.now() + Math.min(CACHE_MAX_AGE, Math.max(15 * 60000, Number.isFinite(delay) ? delay : 0));
   }
   if (!response.ok) {
     await discardBody(response);
@@ -480,15 +498,15 @@ async function fetchSource(source) {
   return events;
 }
 
-async function fetchAllSources() {
-  const results = new Array(SOURCES.length);
+async function fetchAllSources(sources = SOURCES) {
+  const results = new Array(sources.length);
   let next = 0;
   await Promise.all(Array.from({ length: 5 }, async () => {
-    while (next < SOURCES.length) {
+    while (next < sources.length) {
       const index = next++;
       try {
-        const value = await fetchSource(SOURCES[index]);
-        const oldSnapshot = pageCache.get(SOURCES[index].url);
+        const value = await fetchSource(sources[index]);
+        const oldSnapshot = pageCache.get(sources[index].url);
         const previous = oldSnapshot && Date.now() - oldSnapshot.fetchedAt < CACHE_MAX_AGE ? oldSnapshot.events : [];
         const byEvent = new Map();
         if (value.partialError) {
@@ -498,15 +516,42 @@ async function fetchAllSources() {
           }
         }
         const merged = value.partialError ? [...byEvent.values()] : value;
-        pageCache.set(SOURCES[index].url, { events: merged, fetchedAt: value.partialError && previous.length ? oldSnapshot.fetchedAt : Date.now() });
+        pageCache.set(sources[index].url, { events: merged, fetchedAt: value.partialError && previous.length ? oldSnapshot.fetchedAt : Date.now() });
         results[index] = { status: 'fulfilled', value: merged, partialError: value.partialError, reused: Boolean(value.partialError && previous.length) };
       } catch (reason) {
-        const snapshot = pageCache.get(SOURCES[index].url);
+        const snapshot = pageCache.get(sources[index].url);
         results[index] = { status: 'rejected', reason, value: snapshot && Date.now() - snapshot.fetchedAt < CACHE_MAX_AGE ? snapshot.events : [] };
       }
     }
   }));
   return results;
+}
+
+async function scanLuma() {
+  const sources = SOURCES.filter(source => source.name === 'Luma');
+  const results = await fetchAllSources(sources);
+  const status = { Luma: { ok: false, count: 0, pagesOk: 0, pagesFailed: 0 } };
+  const byId = new Map();
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      status.Luma.ok = true;
+      status.Luma.pagesOk++;
+      if (result.partialError) {
+        status.Luma.pagesFailed++;
+        status.Luma.error = result.partialError.message;
+      }
+    } else {
+      status.Luma.pagesFailed++;
+      status.Luma.error = result.reason?.message || 'Unavailable';
+    }
+    for (const event of result.value) {
+      if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event)) continue;
+      byId.set(event.id, byId.has(event.id) ? mergeEvent(byId.get(event.id), event) : event);
+    }
+  }
+  const events = [...byId.values()].map(event => enrich(event)).sort((a, b) => b.score - a.score || Date.parse(a.start) - Date.parse(b.start));
+  status.Luma.count = events.length;
+  return { events, status, updatedAt: new Date().toISOString(), stale: status.Luma.pagesFailed > 0 };
 }
 
 function resetScanCache() {
@@ -524,7 +569,7 @@ async function scan(force = false) {
     return scan(true);
   }
   if (!force && cache && Date.now() - new Date(cache.updatedAt).getTime() < 15 * 60000) {
-    const events = cache.events.filter(event => isUpcoming(event));
+    const events = cache.events.filter(event => isUpcoming(event)).map(event => enrich(event)).sort((a, b) => b.score - a.score || Date.parse(a.start) - Date.parse(b.start));
     const status = Object.fromEntries(Object.entries(cache.status || {}).map(([name, value]) => [name, { ...value, count: events.filter(event => event.source === name).length }]));
     return { ...cache, events, status };
   }
@@ -548,20 +593,37 @@ async function scan(force = false) {
         status[source].error = result.reason?.message || 'Unavailable';
       }
       result.value.forEach(e => {
-        if (!e.url || !e.title || !e.start || !isNycLocation(e) || !isUpcoming(e)) return;
+        if (!e.id || !/^https?:\/\//i.test(e.url || '') || !e.title || !e.start || !isNycLocation(e) || !isUpcoming(e)) return;
         const previous = byId.get(e.id);
         byId.set(e.id, previous ? mergeEvent(previous, e) : e);
       });
     });
+    // A new server has no page cache yet. Keep published events from sources
+    // that reject this scan until a later scan can refresh them.
+    let publishedFallbackUsed = false;
+    if (IS_MAIN && Object.values(status).some(source => source.pagesFailed)) {
+      try {
+        const publishedFile = path.join(ROOT, 'data', 'events.json');
+        const published = JSON.parse(fs.readFileSync(publishedFile, 'utf8'));
+        if (Date.now() - fs.statSync(publishedFile).mtimeMs < CACHE_MAX_AGE && published.version === 1 && Array.isArray(published.events)) {
+          for (const event of published.events) {
+            if (!status[event.source]?.pagesFailed || byId.has(event.id)) continue;
+            if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event)) continue;
+            byId.set(event.id, event);
+            publishedFallbackUsed = true;
+          }
+        }
+      } catch { /* No published snapshot is available. */ }
+    }
     // A full outage should not replace the last usable scan with an empty result.
     if (![...Object.values(status)].some(value => value.pagesOk) && cache && Date.now() - Date.parse(cache.updatedAt) < CACHE_MAX_AGE) {
       const events = cache.events.filter(e => isUpcoming(e));
       for (const name of Object.keys(status)) status[name].count = events.filter(e => e.source === name).length;
       return { ...cache, events, stale: true, status };
     }
-    const events = [...byId.values()].map(enrich).sort((a,b) => b.score - a.score || new Date(a.start) - new Date(b.start));
+    const events = [...byId.values()].map(event => enrich(event)).sort((a,b) => b.score - a.score || new Date(a.start) - new Date(b.start));
     for (const name of Object.keys(status)) status[name].count = events.filter(e => e.source === name).length;
-    cache = { events, status, updatedAt: new Date().toISOString(), stale: results.some(result => result.reused || (result.status === 'rejected' && result.value.length > 0)) };
+    cache = { events, status, updatedAt: new Date().toISOString(), stale: publishedFallbackUsed || results.some(result => result.reused || (result.status === 'rejected' && result.value.length > 0)) };
     saveCache();
     return cache;
   })().finally(() => { pending = null; pendingIsForced = false; });
@@ -574,11 +636,22 @@ function json(res, code, body) {
 }
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
-export { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan };
+export { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan, scanLuma };
+
+async function eventsResponse(force) {
+  const result = await scan(force);
+  const recommendations = buildRecommendations(result, await loadPreferences(ROOT));
+  const ranks = new Map(recommendations.events.map((event, index) => [event.id, index + 1]));
+  return { ...result, events: result.events.map(event => ({ ...event, recommendationRank: ranks.get(event.id) ?? null })) };
+}
 
 async function runReconCycle() {
+  pipelineHealth.running = true;
+  pipelineHealth.lastStartedAt = new Date().toISOString();
+  pipelineHealth.nextRunAt = null;
   try {
     const result = await scan(true);
+    await writeRecommendations(buildRecommendations(result, await loadPreferences(ROOT)), ROOT);
     const complete = Object.values(result.status).every(source => source.pagesFailed === 0);
     if (!complete) {
       console.warn(`Recon scan: ${result.events.length} events; snapshot skipped because source coverage is incomplete`);
@@ -586,9 +659,14 @@ async function runReconCycle() {
       const changed = await publishScan(result.events, ROOT, process.env.GITHUB_SYNC === '1');
       console.log(`Recon scan: ${result.events.length} events${changed ? ', snapshot updated' : ''}`);
     }
+    pipelineHealth.lastCompletedAt = new Date().toISOString();
+    pipelineHealth.lastError = null;
   } catch (error) {
+    pipelineHealth.lastError = error.message;
     console.error(`Recon scan failed: ${error.message}`);
   } finally {
+    pipelineHealth.running = false;
+    pipelineHealth.nextRunAt = new Date(Date.now() + RECON_INTERVAL).toISOString();
     setTimeout(runReconCycle, RECON_INTERVAL);
   }
 }
@@ -596,9 +674,15 @@ async function runReconCycle() {
 if (IS_MAIN) http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
-    if (pathname === '/api/events') return json(res, 200, await scan(false));
-    if (pathname === '/api/refresh' && req.method === 'POST') return json(res, 200, await scan(true));
-    if (pathname === '/api/health') return json(res, 200, { ok: true, updatedAt: cache?.updatedAt || null });
+    if (pathname === '/api/events' && req.method === 'GET') return json(res, 200, await eventsResponse(false));
+    if (pathname === '/api/recommendations' && req.method === 'GET') return json(res, 200, buildRecommendations(await scan(false), await loadPreferences(ROOT)));
+    if (pathname === '/api/refresh' && req.method === 'POST') {
+      if (Date.now() - lastManualRefresh < 60000) return json(res, 429, { error: 'Please wait a minute before refreshing again.' });
+      lastManualRefresh = Date.now();
+      return json(res, 200, await eventsResponse(true));
+    }
+    if (pathname === '/api/health') return json(res, 200, { ok: true, updatedAt: cache?.updatedAt || null, degraded: !cache || Date.now() - Date.parse(cache.updatedAt) > RECON_INTERVAL * 2 || Boolean(pipelineHealth.lastError) || Object.values(cache.status || {}).some(source => source.pagesFailed), pipeline: pipelineHealth, sources: cache?.status || {} });
+    if (pathname.startsWith('/api/')) return json(res, 404, { error: 'Unknown API route or method' });
     const dist = path.join(ROOT, 'dist');
     if (!fs.existsSync(dist)) return json(res, 404, { error: 'Build the web app with npm run build or use npm run dev.' });
     const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');

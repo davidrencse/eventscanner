@@ -1,5 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+
+test('foreign and unknown locations without postal codes are not assumed NYC', () => {
+  assert.equal(isNycLocation({ locality: 'San Francisco' }), false);
+  assert.equal(isNycLocation({ locality: '' }), false);
+  assert.equal(isNycLocation({ locality: 'Astoria' }), true);
+});
+
+test('cancelled Eventbrite server data removes the JSON-LD copy', () => {
+  const url = 'https://www.eventbrite.com/e/mixer-tickets-123';
+  const event = { '@type': 'Event', url, name: 'Mixer', startDate: '2026-10-05', location: { '@type': 'Place', address: { addressLocality: 'New York' } } };
+  const html = `<script type="application/ld+json">${JSON.stringify(event)}</script><script>window.__SERVER_DATA__ = ${JSON.stringify({ search_data: { events: { results: [{ url, eventbrite_event_id: '123', is_cancelled: true }] } } })};</script>`;
+  assert.deepEqual(parseEventbrite(html), []);
+  assert.deepEqual(ldEvents(`<script type="application/ld+json">${JSON.stringify({ ...event, eventStatus: 'https://schema.org/EventCancelled' })}</script>`), []);
+});
+
+test('a sold-out ticket tier does not mark all ticket tiers sold out', () => {
+  const event = { '@type': 'Event', url: 'https://luma.com/tiers', name: 'Mixer', startDate: '2026-10-05', location: { '@type': 'Place', address: { addressLocality: 'New York' } }, offers: [{ availability: 'https://schema.org/SoldOut' }, { availability: 'https://schema.org/InStock' }] };
+  assert.equal(parseLuma(`<script type="application/ld+json">${JSON.stringify(event)}</script>`)[0].spotsLeft, null);
+  const base = { title: 'Tech networking mixer', start: new Date(Date.now() + 86400000).toISOString() };
+  assert.ok(enrich({ ...base, spotsLeft: 0 }).score < enrich(base).score);
+  assert.equal(mapsUrl({ latitude: null, longitude: -73.9 }), '');
+});
 import { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan } from './index.js';
 
 test('reads events from direct JSON-LD, graphs, and lists once', () => {
@@ -17,6 +39,17 @@ test('Eventbrite excludes virtual listings from NYC results', () => {
   ];
   const html = `<script type="application/ld+json">${JSON.stringify({ itemListElement: events.map(item => ({ item })) })}</script>`;
   assert.deepEqual(parseEventbrite(html).map(event => event.title), ['Gallery night']);
+});
+
+test('Eventbrite prices require explicit offer amounts', () => {
+  const offers = [[{ price: 0 }], [{ price: '12.50' }], [{ price: 0 }, { price: null }], null];
+  const events = offers.map((offer, index) => ({
+    '@type': 'Event', url: `https://www.eventbrite.com/e/price-${index}`, name: `Price ${index}`,
+    startDate: '2026-10-01T19:00:00-04:00', offers: offer,
+    location: { '@type': 'Place', name: 'Gallery', address: { addressLocality: 'Brooklyn', postalCode: '11201' } },
+  }));
+  const html = `<script type="application/ld+json">${JSON.stringify({ itemListElement: events.map(item => ({ item })) })}</script>`;
+  assert.deepEqual(parseEventbrite(html).map(event => event.price), ['Free', 'Paid', null, null]);
 });
 
 test('Eventbrite listing data adds exact local time and summary to a deduplicated event', () => {
@@ -118,6 +151,25 @@ test('Luma keeps fetched cursor pages when a later page fails', async () => {
     assert.equal(events.length, 1);
     assert.match(events.partialError.message, /Second page unavailable/);
     assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('Luma registration status takes precedence over a remaining spot count', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({
+    entries: [{
+      event: { visibility: 'public', location_type: 'offline', url: 'closed-event', name: 'Closed event', start_at: new Date(Date.now() + 86400000).toISOString() },
+      ticket_info: { spots_remaining: 86, is_sold_out: false, require_approval: true },
+      registration_availability: 'sold-out',
+    }], has_more: false,
+  }) });
+  try {
+    const [event] = await fetchLumaFeed();
+    assert.equal(event.spotsLeft, 86);
+    assert.equal(event.availability, 'sold-out');
+    assert.equal(event.approvalRequired, true);
   } finally {
     global.fetch = originalFetch;
   }
