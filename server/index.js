@@ -542,6 +542,21 @@ function isUpcoming(event, now = Date.now()) {
   return Number.isFinite(start) && (!event.timeKnown ? nyDay(start) >= nyDay(now) : start >= now) && start < now + 90 * 86400000;
 }
 
+// Placeholder/junk titles that slip in from source pages and carry no real event.
+const PLACEHOLDER_TITLE = /^(?:untitled|no title|title|test(?:ing)?|tba|tbd|rsvp|register|event|events|new event|sample|example|draft|private event)$/i;
+
+// Prune low-signal listings: empty, placeholder, or non-text titles that make
+// for useless cards even when the rest of the fields parse. Date and location
+// quality are handled by isUpcoming and isNycLocation.
+function isQualityEvent(event) {
+  const title = cleanText(event?.title);
+  if (title.length < 3) return false;
+  if (PLACEHOLDER_TITLE.test(title)) return false;
+  if (/^https?:\/\//i.test(title)) return false; // title is just a link
+  if (!/[\p{L}\p{N}]/u.test(title)) return false; // no letters or digits (emoji/punctuation only)
+  return true;
+}
+
 async function fetchSource(source) {
   if (source.kind === 'luma-api') return fetchLumaFeed();
   if (source.kind === 'parks-api') return fetchParks();
@@ -610,7 +625,7 @@ async function scanLuma() {
       status.Luma.error = result.reason?.message || 'Unavailable';
     }
     for (const event of result.value) {
-      if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event)) continue;
+      if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event) || !isQualityEvent(event)) continue;
       byId.set(event.id, byId.has(event.id) ? mergeEvent(byId.get(event.id), event) : event);
     }
   }
@@ -628,7 +643,7 @@ async function scanOsint() {
     if (result.status === 'fulfilled') { status['Community (web)'].ok = true; status['Community (web)'].pagesOk++; }
     else { status['Community (web)'].pagesFailed++; status['Community (web)'].error = result.reason?.message || 'Unavailable'; }
     for (const event of result.value) {
-      if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event)) continue;
+      if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event) || !isQualityEvent(event)) continue;
       byId.set(event.id, byId.has(event.id) ? mergeEvent(byId.get(event.id), event) : event);
     }
   }
@@ -676,7 +691,7 @@ async function scan(force = false) {
         status[source].error = result.reason?.message || 'Unavailable';
       }
       result.value.forEach(e => {
-        if (!e.id || !/^https?:\/\//i.test(e.url || '') || !e.title || !e.start || !isNycLocation(e) || !isUpcoming(e)) return;
+        if (!e.id || !/^https?:\/\//i.test(e.url || '') || !e.title || !e.start || !isNycLocation(e) || !isUpcoming(e) || !isQualityEvent(e)) return;
         const previous = byId.get(e.id);
         byId.set(e.id, previous ? mergeEvent(previous, e) : e);
       });
@@ -691,7 +706,7 @@ async function scan(force = false) {
         if (Date.now() - fs.statSync(publishedFile).mtimeMs < CACHE_MAX_AGE && published.version === 1 && Array.isArray(published.events)) {
           for (const event of published.events) {
             if (!status[event.source]?.pagesFailed || byId.has(event.id)) continue;
-            if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event)) continue;
+            if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event) || !isQualityEvent(event)) continue;
             byId.set(event.id, event);
             publishedFallbackUsed = true;
           }
@@ -719,7 +734,7 @@ function json(res, code, body) {
 }
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
-export { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan, scanLuma, scanOsint, parseListing, eventFromJsonLd };
+export { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, isQualityEvent, mergeEvent, mapsUrl, spotCount, resetScanCache, scan, scanLuma, scanOsint, parseListing, eventFromJsonLd };
 
 async function eventsResponse(force) {
   const result = await scan(force);

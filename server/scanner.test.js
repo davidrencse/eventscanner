@@ -22,7 +22,7 @@ test('a sold-out ticket tier does not mark all ticket tiers sold out', () => {
   assert.ok(enrich({ ...base, spotsLeft: 0 }).score < enrich(base).score);
   assert.equal(mapsUrl({ latitude: null, longitude: -73.9 }), '');
 });
-import { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan } from './index.js';
+import { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, isQualityEvent, mergeEvent, mapsUrl, spotCount, resetScanCache, scan } from './index.js';
 
 test('reads events from direct JSON-LD, graphs, and lists once', () => {
   const html = [
@@ -280,4 +280,18 @@ test('refresh starts another scan after the one already running', async () => {
     global.fetch = originalFetch;
     resetScanCache();
   }
+});
+
+test('isQualityEvent prunes placeholder, empty, and non-text titles', () => {
+  assert.equal(isQualityEvent({ title: 'NYC Founders Mixer' }), true);
+  assert.equal(isQualityEvent({ title: '  AI & Coffee  ' }), true);
+  assert.equal(isQualityEvent({ title: 'Untitled' }), false);
+  assert.equal(isQualityEvent({ title: 'TBD' }), false);
+  assert.equal(isQualityEvent({ title: 'rsvp' }), false);
+  assert.equal(isQualityEvent({ title: 'Event' }), false);
+  assert.equal(isQualityEvent({ title: '' }), false);
+  assert.equal(isQualityEvent({ title: 'ab' }), false, 'too short');
+  assert.equal(isQualityEvent({ title: 'https://lu.ma/x' }), false, 'bare link');
+  assert.equal(isQualityEvent({ title: '🎉🎉🎉' }), false, 'no letters or digits');
+  assert.equal(isQualityEvent({}), false, 'missing title');
 });
