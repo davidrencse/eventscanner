@@ -52,6 +52,20 @@ Run a standalone discovery pass with `npm run discover`. It writes the shortlist
 
 Run `npm run discover:luma` for a Luma-only shortlist in `.cache/luma-recommendations.json`. Discovery also reads Luma's NYC tech and AI pages. The shortlist favors explicit tech networking in titles, known organizers, reported attendance, and available tickets; it excludes listings marked sold out, waitlist, or closed by Luma. Host approval is noted and slightly lowers the rank. Luma says its Discover pages are curated and do not include every public event, so this remains a ranked selection of visible listings rather than a complete Luma catalog.
 
+### Community web discovery (OSINT)
+
+An optional source finds events organizers have already published to the open web and that a search engine has already indexed, then reads each listing's **public** structured data. It widens coverage beyond the curated platform feeds without touching anything gated.
+
+Scope is deliberately narrow and public-only:
+
+- **Public pages only.** It never signs in, sends no cookies or tokens, and reads only what a logged-out visitor could already load. Listings that require login, approval, or an invite are not fetched or bypassed.
+- **No guessing.** Queries are plain keywords. It never enumerates, brute-forces, or mutates event ids, slugs, or invite codes to reach unlisted pages — it can only surface URLs a search engine already returns.
+- **Polite.** It honors `robots.txt`, identifies itself with a descriptive User-Agent, spaces out requests per host, and caps how much it fetches per scan.
+
+It stays **off** unless `config/osint.json` has `"enabled": true` (the default) **and** a search API key is present in the environment. Set `BRAVE_SEARCH_API_KEY` (or `OSINT_SEARCH_API_KEY`) as a host secret — never in the repository or in `config/osint.json`. Without a key the source is simply not registered and scans run exactly as before.
+
+`config/osint.json` controls the keyword set, allowlisted event domains (`lu.ma`, `luma.com`, `partiful.com`, `eventbrite.com`), result and listing caps, per-host delay, and whether to honor `robots.txt`. Discovered events carry their platform-native id and link, so they dedupe against the same event from a platform feed; new ones are labeled **Community (web)** so the dashboard shows how they were found. Run a standalone pass with `npm run discover:osint`, which writes `.cache/osint-recommendations.json`.
+
 `.github/workflows/ci.yml` tests and builds changes. `.github/workflows/discovery.yml` runs discovery hourly and on manual dispatch, and uploads a seven-day shortlist artifact even when coverage is incomplete. These workflows become available after the code is pushed to GitHub with Actions enabled; scheduled runs use the default branch and may be delayed. They do not deploy the server or update the live dashboard. Public source blocking and incomplete catalogs mean the pipeline cannot guarantee every event or availability.
 
 - The scanner reads Luma's public NYC discovery feed (up to ten cursor pages of 50 events, with the city page as a fallback), Partiful's NYC Explore and Partilist pages, 28 bounded Eventbrite NYC city/category pages, and NYC Parks' public upcoming feed. The Parks scan starts at the current NYC date and skips selected high volume children's programs, Shape Up classes, and ongoing exhibits. It refreshes in the background every 15 minutes and when you click **Refresh**.

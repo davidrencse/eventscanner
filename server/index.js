@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishScan } from './recon.js';
 import { buildRecommendations, loadPreferences, writeRecommendations } from './pipeline.js';
+import { loadOsintConfig, validateOsintConfig, osintEnabled, createSearchProvider, discoverListings } from './osint.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,6 +28,15 @@ const SOURCES = [
     }))
   ),
 ];
+// OSINT web-discovery source: finds events organizers already published to the
+// open web and that a search engine already indexed. Public pages only; it is
+// off unless config enables it and a search API key is present in the environment.
+let osintConfig;
+try { osintConfig = validateOsintConfig(JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'osint.json'), 'utf8'))); }
+catch { osintConfig = validateOsintConfig(); }
+if (osintEnabled(osintConfig, process.env)) {
+  SOURCES.push({ name: 'Community (web)', url: 'osint:search', kind: 'osint' });
+}
 let cache = null;
 let pending = null;
 let pendingIsForced = false;
@@ -322,6 +332,60 @@ async function fetchLumaFeed() {
   return events;
 }
 
+// Map a single public listing's JSON-LD Event into our event shape. Used for
+// platforms whose individual event pages expose schema.org structured data.
+function eventFromJsonLd(event, { url, id, source }) {
+  const location = physicalLocation(event);
+  if (!location || !event?.name) return null;
+  return {
+    id, source, url,
+    title: event.name, description: cleanText(event.description), summary: cleanText(event.description),
+    start: dateValue(event.startDate), end: dateValue(event.endDate), timeKnown: !/^\d{4}-\d{2}-\d{2}$/.test(event.startDate || ''),
+    venue: location.name || location.address?.streetAddress || 'New York City',
+    locality: location.address?.addressLocality || 'New York', postalCode: location.address?.postalCode || '',
+    image: imageUrl(event.image),
+    organizer: (Array.isArray(event.organizer) ? event.organizer : [event.organizer]).filter(Boolean).map(item => item.name).filter(Boolean).join(', '),
+    price: offerPrice(event.offers), popularity: null,
+    spotsLeft: spotCount(event.remainingAttendeeCapacity, offerSoldOut(event.offers)), availability: null,
+    mapsUrl: mapsUrl({ latitude: location.geo?.latitude, longitude: location.geo?.longitude, query: [location.address?.streetAddress || location.name, location.address?.addressLocality, location.address?.postalCode].filter(Boolean).join(', ') }),
+  };
+}
+
+// Parse one public listing page into events, keeping platform-native ids so a
+// web-discovered event dedupes against the same event from a platform feed.
+function parseListing(url, host, html) {
+  const h = String(host || '').toLowerCase();
+  if (h === 'luma.com' || h.endsWith('.luma.com') || h === 'lu.ma' || h.endsWith('.lu.ma')) return parseLuma(html);
+  if (h === 'partiful.com' || h.endsWith('.partiful.com')) {
+    const slug = (() => { try { return new URL(url).pathname.split('/').filter(Boolean)[1] || url; } catch { return url; } })();
+    return ldEvents(html).flatMap(event => { const e = eventFromJsonLd(event, { url, id: `partiful:${slug}`, source: 'Partiful' }); return e ? [e] : []; });
+  }
+  if (h === 'eventbrite.com' || h.endsWith('.eventbrite.com')) {
+    return ldEvents(html).flatMap(event => { const e = eventFromJsonLd(event, { url, id: eventbriteId(event.url || url), source: 'Eventbrite' }); return e ? [e] : []; });
+  }
+  return [];
+}
+
+async function fetchOsint() {
+  const config = await loadOsintConfig(ROOT);
+  const search = createSearchProvider(config, process.env);
+  if (!search) throw new Error('OSINT search provider is not configured (set BRAVE_SEARCH_API_KEY)');
+  const { listings } = await discoverListings(config, { search });
+  const events = [];
+  const seen = new Set();
+  for (const listing of listings) {
+    for (const event of parseListing(listing.url, listing.host, listing.html)) {
+      if (!event?.id || seen.has(event.id)) continue;
+      seen.add(event.id);
+      // Keep the platform-native id/url for dedupe and link-through, but label
+      // the discovery method so the dashboard can show how it was found.
+      events.push({ ...event, source: 'Community (web)' });
+    }
+  }
+  if (!events.length) throw new Error('No public events found');
+  return events;
+}
+
 function parsePartiful(html) {
   const data = scriptJson(html, attrs => /id=["']__NEXT_DATA__["']/.test(attrs));
   const page = data?.props?.pageProps || {};
@@ -481,6 +545,7 @@ function isUpcoming(event, now = Date.now()) {
 async function fetchSource(source) {
   if (source.kind === 'luma-api') return fetchLumaFeed();
   if (source.kind === 'parks-api') return fetchParks();
+  if (source.kind === 'osint') return fetchOsint();
   if (source.name === 'Eventbrite' && Date.now() < eventbriteCooldownUntil) throw new Error('Eventbrite is temporarily rate limited');
   const response = await fetch(source.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Citysignal/1.0; public-event-discovery)', 'Accept': 'text/html' }, signal: AbortSignal.timeout(18000) });
   if (source.name === 'Eventbrite' && response.status === 429) {
@@ -552,6 +617,24 @@ async function scanLuma() {
   const events = [...byId.values()].map(event => enrich(event)).sort((a, b) => b.score - a.score || Date.parse(a.start) - Date.parse(b.start));
   status.Luma.count = events.length;
   return { events, status, updatedAt: new Date().toISOString(), stale: status.Luma.pagesFailed > 0 };
+}
+
+async function scanOsint() {
+  const source = { name: 'Community (web)', url: 'osint:search', kind: 'osint' };
+  const results = await fetchAllSources([source]);
+  const status = { 'Community (web)': { ok: false, count: 0, pagesOk: 0, pagesFailed: 0 } };
+  const byId = new Map();
+  for (const result of results) {
+    if (result.status === 'fulfilled') { status['Community (web)'].ok = true; status['Community (web)'].pagesOk++; }
+    else { status['Community (web)'].pagesFailed++; status['Community (web)'].error = result.reason?.message || 'Unavailable'; }
+    for (const event of result.value) {
+      if (!event.id || !/^https?:\/\//i.test(event.url || '') || !event.title || !event.start || !isNycLocation(event) || !isUpcoming(event)) continue;
+      byId.set(event.id, byId.has(event.id) ? mergeEvent(byId.get(event.id), event) : event);
+    }
+  }
+  const events = [...byId.values()].map(event => enrich(event)).sort((a, b) => b.score - a.score || Date.parse(a.start) - Date.parse(b.start));
+  status['Community (web)'].count = events.length;
+  return { events, status, updatedAt: new Date().toISOString(), stale: status['Community (web)'].pagesFailed > 0 };
 }
 
 function resetScanCache() {
@@ -636,7 +719,7 @@ function json(res, code, body) {
 }
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
-export { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan, scanLuma };
+export { ldEvents, parseLuma, parseEventbrite, parseParks, fetchLumaFeed, enrich, isNycLocation, isUpcoming, mergeEvent, mapsUrl, spotCount, resetScanCache, scan, scanLuma, scanOsint, parseListing, eventFromJsonLd };
 
 async function eventsResponse(force) {
   const result = await scan(force);

@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "provider": "brave",
+  "keywords": [
+    "mixer",
+    "networking",
+    "tech happy hour",
+    "founders social",
+    "startup meetup",
+    "ai meetup"
+  ],
+  "locationTerms": ["NYC", "New York"],
+  "domains": ["lu.ma", "luma.com", "partiful.com", "eventbrite.com"],
+  "maxQueries": 8,
+  "resultsPerQuery": 10,
+  "maxListings": 40,
+  "perHostDelayMs": 1500,
+  "concurrency": 3,
+  "respectRobots": true,
+  "userAgent": "Mozilla/5.0 (compatible; Citysignal/1.0; +public-event-discovery)"
+}

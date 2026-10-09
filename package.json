@@ -12,6 +12,7 @@
     "check:scan": "node scripts/check-scan.mjs",
     "discover": "node scripts/discover.mjs",
     "discover:luma": "node scripts/discover.mjs --luma",
+    "discover:osint": "node scripts/discover.mjs --osint",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server/index.js"
   },
