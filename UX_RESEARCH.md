@@ -33,3 +33,19 @@ These choices align with [Baymard's research on applied-filter visibility](https
 ## Next validation
 
 These simulations are directional. A real usability study would ask NYC residents to complete a tonight, weekend, and saved-plan task on their own phone, then measure task success and points of confusion. No real participants were recruited for this pass.
+
+## October 2026 redesign — scripted usability tasks
+
+The UI was rebuilt (see DESIGN.md). A Playwright script ran these tasks against the build at desktop (1280×800, light) and phone (390×844, dark, touch) sizes:
+
+| Task | Result (both sizes) |
+| --- | --- |
+| See a first result without scrolling | Pass (top at 348px on desktop, 444px on phone) |
+| Find a mixer happening tomorrow | Two taps (Tomorrow, Mixers); state saved in the URL |
+| Save an event, confirm it, and find it in Saved | Pass, with toast, Undo, and tab badge |
+| Recover from a search with zero results | One tap ("Clear all filters") |
+| Keyboard: jump to search | `/` focuses search |
+| Interactive targets smaller than 32px | None |
+| Horizontal page scroll / runtime errors | None |
+
+These are still scripted checks, not sessions with real people. The next step is a moderated study with 5 NYC residents on their own phones, measuring how many complete the tonight, weekend, and saved-plan tasks, how long each takes, and their SUS score.

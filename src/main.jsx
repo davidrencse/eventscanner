@@ -1,20 +1,35 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowUpRight, Bookmark, ChevronDown, Compass, MapPin, RefreshCw, Search, X } from 'lucide-react';
+import { ArrowUpRight, Bookmark, Info, MapPin, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import { dateMatches, nyDateKey } from './dates.js';
 import './styles.css';
 
-const SOURCES = ['All sources', 'Luma', 'Partiful', 'Eventbrite', 'NYC Parks'];
-const TYPES = ['All types', 'Mixers', 'Tech', 'Big names', 'Arts & culture', 'Food & drink', 'Music & nightlife', 'Wellness', 'Business'];
-const DATES = ['Any date', 'Tonight', 'Today', 'Tomorrow', 'This weekend', 'Next 7 days'];
-const PRICES = ['Any price', 'Free', 'Paid'];
-const QUICK_DATES = ['Tonight', 'This weekend', 'Next 7 days'];
+const SOURCES = ['Luma', 'Partiful', 'Eventbrite', 'NYC Parks'];
+const TYPES = ['Mixers', 'Tech', 'Music & nightlife', 'Arts & culture', 'Food & drink', 'Business', 'Wellness', 'Big names'];
+const WHEN = [['Any date', 'Anytime'], ['Tonight', 'Tonight'], ['Tomorrow', 'Tomorrow'], ['This weekend', 'This weekend'], ['Next 7 days', 'Next 7 days']];
+const SORTS = ['Best match', 'Soonest', 'Most interest'];
+const DEFAULTS = { q: '', when: 'Any date', type: '', source: '', price: '', sort: 'Best match' };
+const PAGE = 30;
+const SNAPSHOT_KEYS = ['id', 'source', 'url', 'title', 'start', 'timeKnown', 'venue', 'locality', 'mapsUrl', 'image', 'summary', 'tags', 'companies', 'price', 'spotsLeft', 'availability', 'organizer', 'popularity', 'score'];
+
 const normalizeSavedId = id => {
   if (id.startsWith('eventbrite:https://') && /tickets-(\d+)/.test(id)) return `eventbrite:${/tickets-(\d+)/.exec(id)[1]}`;
   if (id.startsWith('luma:')) return `luma:${id.slice(5).replace(/\/+$/, '')}`;
   return id;
 };
 const fmt = (value, options) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', ...options }).format(new Date(value));
+const readStore = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+const writeStore = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Storage may be blocked; state stays in memory. */ } };
+
+function readUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  const state = { ...DEFAULTS };
+  for (const key of Object.keys(DEFAULTS)) if (params.has(key)) state[key] = params.get(key);
+  if (!WHEN.some(([value]) => value === state.when)) state.when = DEFAULTS.when;
+  if (!SORTS.includes(state.sort)) state.sort = DEFAULTS.sort;
+  return { filters: state, view: params.get('view') === 'saved' ? 'saved' : 'explore' };
+}
+
 function spotsLabel(event) {
   if (event.availability === 'waitlist') return 'Waitlist';
   if (event.availability === 'sold-out') return 'Sold out';
@@ -26,61 +41,117 @@ function spotsLabel(event) {
   return event.availability === 'few' ? 'Few spots left' : '';
 }
 
-function EventRow({ event, saved, onSave, unavailable = false, compact = false }) {
-  const month = fmt(event.start, { month: 'short' });
-  const day = fmt(event.start, { day: 'numeric' });
-  const weekday = fmt(event.start, { weekday: 'short' });
-  const time = event.timeKnown ? fmt(event.start, { hour: 'numeric', minute: '2-digit' }) : '';
-  const description = (event.summary ?? event.description ?? '').replace(/\s+/g, ' ').trim();
-  const summary = description.length > 180 ? `${description.slice(0, 177).trimEnd()}…` : description;
-  const topicTags = (event.tags || []).filter(tag => tag !== 'Big names').slice(0, event.companies?.length ? 1 : 2);
+function dayLabel(key, now) {
+  const today = nyDateKey(now);
+  const tomorrow = nyDateKey(new Date(now).getTime() + 86400000);
+  const date = new Date(`${key}T12:00:00Z`);
+  const long = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric' }).format(date);
+  if (key === today) return { title: 'Today', sub: long };
+  if (key === tomorrow) return { title: 'Tomorrow', sub: long };
+  return { title: new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long' }).format(date), sub: new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'long', day: 'numeric' }).format(date) };
+}
+
+function matches(event, filters, now, skip) {
+  const text = filters.q.trim().toLowerCase();
+  const start = Date.parse(event.start);
+  if (!Number.isFinite(start)) return false;
+  if (event.timeKnown ? start < now : nyDateKey(start) < nyDateKey(now)) return false;
+  if (skip !== 'source' && filters.source && event.source !== filters.source) return false;
+  if (skip !== 'type' && filters.type && !event.tags?.includes(filters.type)) return false;
+  if (skip !== 'price' && filters.price && event.price !== filters.price) return false;
+  if (skip !== 'when') {
+    if (filters.when === 'Tonight' && !event.timeKnown) return false;
+    if (!dateMatches(event.start, filters.when, now)) return false;
+  }
+  if (text && !`${event.title || ''} ${event.description || ''} ${event.organizer || ''} ${event.venue || ''} ${event.locality || ''} ${(event.tags || []).join(' ')} ${(event.companies || []).join(' ')}`.toLowerCase().includes(text)) return false;
+  return true;
+}
+
+function sortEvents(list, sort) {
+  const byStart = (a, b) => Date.parse(a.start) - Date.parse(b.start);
+  if (sort === 'Soonest') return list.sort(byStart);
+  if (sort === 'Most interest') return list.sort((a, b) => (b.popularity || 0) - (a.popularity || 0) || (b.score || 0) - (a.score || 0));
+  return list.sort((a, b) => (a.recommendationRank ?? Infinity) - (b.recommendationRank ?? Infinity) || (b.score || 0) - (a.score || 0) || byStart(a, b));
+}
+
+function Thumb({ event }) {
+  const [failed, setFailed] = useState(false);
+  const initial = (event.title || '?').trim().charAt(0).toUpperCase();
+  return <div className="thumb" aria-hidden="true">
+    {event.image && !failed
+      ? <img src={event.image} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+      : <span>{initial}</span>}
+  </div>;
+}
+
+function EventCard({ event, saved, onSave, showDate, stale }) {
+  const time = event.timeKnown ? fmt(event.start, { hour: 'numeric', minute: '2-digit' }) : 'Time TBA';
+  const date = fmt(event.start, { weekday: 'short', month: 'short', day: 'numeric' });
+  const place = [event.venue, event.locality && event.locality !== event.venue ? event.locality : ''].filter(Boolean).join(', ');
+  const summary = (event.summary || event.description || '').replace(/\s+/g, ' ').trim();
   const spots = spotsLabel(event);
-  const place = `${event.venue}${event.locality && event.locality !== event.venue ? `, ${event.locality}` : ''}`;
-  const facts = [
-    { text: event.source, className: 'source-label' },
-    ...topicTags.map(text => ({ text })),
-    ...(event.companies || []).slice(0, 2).map(text => ({ text })),
-    { text: event.price === 'Free' || event.price === 'Paid' ? event.price : 'Check price', className: event.price === 'Free' || event.price === 'Paid' ? 'price-label' : 'price-unknown' },
-    ...(spots ? [{ text: spots, className: event.spotsLeft === 0 || ['sold-out', 'waitlist', 'closed'].includes(event.availability) ? 'is-sold-out' : '' }] : []),
-  ];
-  const whenWhere = time && place ? `${time} at ${place}` : [time, place].filter(Boolean).join(' · ') || 'Time is on the event page';
-  return <article className={`event-row${compact ? ' compact' : ''}`}>
-    <div className="event-date" aria-label={`${weekday}, ${month} ${day}`}><span>{weekday}</span><strong>{day}</strong><span>{month}</span></div>
-    <div className="event-body">
-      <p className="event-facts">{facts.map((fact, index) => <span key={`${fact.text}-${index}`} className={fact.className}>{fact.text}</span>)}</p>
-      <h3><a href={event.url} target="_blank" rel="noopener noreferrer">{event.title}</a></h3>
-      <p className="event-meta">{whenWhere}{!time && place ? '. Time on listing.' : ''}</p>
-      {!compact && summary && <p className="event-summary">{summary}</p>}
-      {!compact && event.organizer && <p className="event-organizer">Hosted by {event.organizer}</p>}
-      {unavailable && <p className="event-unavailable">Not in the latest scan. Check the original listing before you go.</p>}
-      <div className="event-actions">
-        {event.mapsUrl && <a href={event.mapsUrl} target="_blank" rel="noopener noreferrer" aria-label={`Directions to ${place}`}><MapPin size={16} /> Directions</a>}
-        <button className={saved ? 'is-saved' : ''} type="button" onClick={() => onSave(event.id)} aria-label={saved ? `Saved. Remove ${event.title}` : `Save ${event.title}`}><Bookmark size={16} fill={saved ? 'currentColor' : 'none'} />{saved ? 'Saved' : 'Save'}</button>
-        <a href={event.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${event.title} on ${event.source}`}><ArrowUpRight size={16} /> On {event.source}</a>
+  const soldOut = event.spotsLeft === 0 || ['sold-out', 'waitlist', 'closed'].includes(event.availability);
+  const tags = [...(event.tags || []).filter(tag => tag !== 'Big names' && tag !== 'Around town').slice(0, 2), ...(event.companies || []).slice(0, 2)];
+  return <article className="card">
+    <Thumb event={event} />
+    <div className="card-body">
+      <p className="card-when">
+        <time dateTime={event.start}>{showDate ? `${date} · ${time}` : time}</time>
+        {event.price === 'Free' && <span className="badge badge-good">Free</span>}
+        {spots && <span className={`badge ${soldOut ? 'badge-bad' : 'badge-warn'}`}>{spots}</span>}
+      </p>
+      <h3 className="card-title"><a href={event.url} target="_blank" rel="noopener noreferrer">{event.title}<span className="visually-hidden"> (opens {event.source} in a new tab)</span></a></h3>
+      {place && <p className="card-place"><MapPin size={14} aria-hidden="true" />{place}</p>}
+      {summary && <p className="card-summary">{summary}</p>}
+      <p className="card-meta">
+        <span className="source">via {event.source}</span>
+        {tags.map(tag => <span key={tag} className="tag">{tag}</span>)}
+      </p>
+      {event.organizer && <p className="card-host">Hosted by {event.organizer}</p>}
+      {stale && <p className="card-stale"><Info size={14} aria-hidden="true" />Not in the latest scan — check the listing before you go.</p>}
+      <div className="card-actions">
+        <button type="button" className={`icon-btn${saved ? ' is-on' : ''}`} onClick={() => onSave(event)} aria-pressed={saved} aria-label={`Save ${event.title}`}>
+          <Bookmark size={18} fill={saved ? 'currentColor' : 'none'} aria-hidden="true" /><span>{saved ? 'Saved' : 'Save'}</span>
+        </button>
+        {event.mapsUrl && <a className="icon-btn" href={event.mapsUrl} target="_blank" rel="noopener noreferrer" aria-label={`Directions to ${place || event.title}`}><MapPin size={18} aria-hidden="true" /><span>Map</span></a>}
+        <a className="icon-btn" href={event.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${event.title} on ${event.source}`}><ArrowUpRight size={18} aria-hidden="true" /><span>Open on {event.source}</span></a>
       </div>
     </div>
   </article>;
 }
 
+function Chip({ selected, onClick, children, count }) {
+  return <button type="button" className={`chip${selected ? ' is-on' : ''}`} aria-pressed={selected} onClick={onClick} disabled={!selected && count === 0}>
+    {children}{count !== undefined && <span className="chip-count">{count}</span>}
+  </button>;
+}
+
 function App() {
+  const initial = useMemo(readUrlState, []);
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [view, setView] = useState('explore');
-  const [source, setSource] = useState('All sources');
-  const [category, setCategory] = useState('All types');
-  const [date, setDate] = useState('Any date');
-  const [price, setPrice] = useState('Any price');
-  const [sort, setSort] = useState('Best match');
-  const [query, setQuery] = useState('');
-  const [compact, setCompact] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(30);
-  const [saved, setSaved] = useState(() => { try { return [...new Set(JSON.parse(localStorage.getItem('citysignal-saved') || '[]').map(normalizeSavedId))]; } catch { return []; } });
-  const [savedEvents, setSavedEvents] = useState(() => { try { const value = JSON.parse(localStorage.getItem('citysignal-saved-events') || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } });
+  const [view, setView] = useState(initial.view);
+  const [filters, setFilters] = useState(initial.filters);
+  const [showMore, setShowMore] = useState(Boolean(initial.filters.source || initial.filters.price || initial.filters.sort !== DEFAULTS.sort));
+  const [visible, setVisible] = useState(PAGE);
+  const [saved, setSaved] = useState(() => { const list = readStore('citysignal-saved', []); return Array.isArray(list) ? [...new Set(list.map(normalizeSavedId))] : []; });
+  const [snapshots, setSnapshots] = useState(() => { const value = readStore('citysignal-saved-events', {}); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; });
+  const [toast, setToast] = useState(null);
   const [now, setNow] = useState(Date.now);
   const loadId = useRef(0);
   const headingRef = useRef(null);
+  const searchRef = useRef(null);
+  const toastTimer = useRef(0);
+  const topbarRef = useRef(null);
+
+  useEffect(() => {
+    const bar = topbarRef.current;
+    const observer = new ResizeObserver(() => document.documentElement.style.setProperty('--topbar-h', `${bar.offsetHeight}px`));
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
 
   async function load(force = false, background = false) {
     const requestId = ++loadId.current;
@@ -89,105 +160,208 @@ function App() {
     setError('');
     try {
       const response = await fetch(force ? '/api/refresh' : '/api/events', { method: force ? 'POST' : 'GET', signal: AbortSignal.timeout(180000) });
-      if (!response.ok) throw new Error('The list didn’t load');
+      if (!response.ok) throw new Error('load failed');
       const body = await response.json();
-      if (requestId !== loadId.current) return;
-      setData(body);
-    } catch (e) {
-      if (requestId !== loadId.current) return;
-      setError('The list didn’t load');
+      if (requestId === loadId.current) setData(body);
+    } catch {
+      if (requestId === loadId.current) setError('The list didn’t load.');
     } finally {
-      if (requestId === loadId.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
+      if (requestId === loadId.current) { setLoading(false); setRefreshing(false); }
     }
   }
+
   useEffect(() => {
     load();
-    const timer = setInterval(() => { if (!document.hidden) load(false, true); }, 5 * 60000);
+    const poll = setInterval(() => { if (!document.hidden) load(false, true); }, 5 * 60000);
     const clock = setInterval(() => setNow(Date.now()), 60000);
-    return () => { clearInterval(timer); clearInterval(clock); loadId.current++; };
+    const onKey = e => {
+      if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) { e.preventDefault(); searchRef.current?.focus(); }
+    };
+    const onPop = () => { const next = readUrlState(); setFilters(next.filters); setView(next.view); };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('popstate', onPop);
+    return () => { clearInterval(poll); clearInterval(clock); window.removeEventListener('keydown', onKey); window.removeEventListener('popstate', onPop); loadId.current++; };
   }, []);
-  useEffect(() => { try { localStorage.setItem('citysignal-saved', JSON.stringify(saved)); } catch { /* Saving remains available for this session. */ } }, [saved]);
-  useEffect(() => { try { localStorage.setItem('citysignal-saved-events', JSON.stringify(savedEvents)); } catch { /* Storage may be disabled or full. */ } }, [savedEvents]);
-  useEffect(() => { window.scrollTo(0, 0); }, [view]);
-  useEffect(() => { setVisibleCount(30); }, [view, source, category, date, price, sort, query]);
-  function toggleSave(id) {
-    if (saved.includes(id)) {
-      setSaved(current => current.filter(x => x !== id));
-      setSavedEvents(current => { const next = { ...current }; delete next[id]; return next; });
+
+  // Keep filters in the URL so Back works and a filtered list can be shared.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) if (value !== DEFAULTS[key]) params.set(key, value);
+    if (view === 'saved') params.set('view', 'saved');
+    const next = `${window.location.pathname}${params.size ? `?${params}` : ''}`;
+    if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, '', next);
+  }, [filters, view]);
+  useEffect(() => writeStore('citysignal-saved', saved), [saved]);
+  useEffect(() => writeStore('citysignal-saved-events', snapshots), [snapshots]);
+  useEffect(() => setVisible(PAGE), [filters, view]);
+
+  const set = useCallback((key, value) => setFilters(current => ({ ...current, [key]: value })), []);
+  const toggle = (key, value) => set(key, filters[key] === value ? DEFAULTS[key] : value);
+  const clearFilters = () => setFilters(current => ({ ...DEFAULTS, sort: current.sort }));
+
+  function showToast(message, undo) {
+    clearTimeout(toastTimer.current);
+    setToast({ message, undo });
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }
+  function toggleSave(event) {
+    if (saved.includes(event.id)) {
+      const snapshot = snapshots[event.id];
+      setSaved(current => current.filter(id => id !== event.id));
+      setSnapshots(current => { const next = { ...current }; delete next[event.id]; return next; });
+      showToast('Removed from saved', () => {
+        setSaved(current => current.includes(event.id) ? current : [...current, event.id]);
+        if (snapshot) setSnapshots(current => ({ ...current, [event.id]: snapshot }));
+      });
     } else {
-      const event = data?.events?.find(item => item.id === id) || savedEvents[id];
-      if (event) {
-        const snapshot = Object.fromEntries(['id', 'source', 'url', 'title', 'start', 'timeKnown', 'venue', 'locality', 'mapsUrl', 'summary', 'tags', 'companies', 'price', 'spotsLeft', 'availability', 'organizer', 'popularity', 'score'].map(key => [key, event[key]]));
-        snapshot.description = (event.description || '').slice(0, 200);
-        setSavedEvents(current => ({ ...current, [id]: snapshot }));
-      }
-      setSaved(current => [...current, id]);
+      const snapshot = Object.fromEntries(SNAPSHOT_KEYS.map(key => [key, event[key]]));
+      snapshot.description = (event.description || '').slice(0, 200);
+      setSnapshots(current => ({ ...current, [event.id]: snapshot }));
+      setSaved(current => [...current, event.id]);
+      showToast('Saved for later', () => {
+        setSaved(current => current.filter(id => id !== event.id));
+        setSnapshots(current => { const next = { ...current }; delete next[event.id]; return next; });
+      });
     }
   }
   function changeView(next) {
     setView(next);
-    requestAnimationFrame(() => {
-      headingRef.current?.focus({ preventScroll: true });
-      window.scrollTo(0, 0);
-    });
+    requestAnimationFrame(() => { window.scrollTo(0, 0); headingRef.current?.focus({ preventScroll: true }); });
   }
-  function clearFilters() { setSource('All sources'); setCategory('All types'); setDate('Any date'); setPrice('Any price'); setQuery(''); }
 
   const currentIds = useMemo(() => new Set((data?.events || []).map(event => event.id)), [data]);
-  const missingSaved = useMemo(() => saved.map(id => savedEvents[id]).filter(event => event && !currentIds.has(event.id) && new Date(event.start).getTime() >= Date.now()), [saved, savedEvents, currentIds]);
-  const events = useMemo(() => {
-    const text = query.trim().toLowerCase();
-    const pool = view === 'saved' ? [...(data?.events || []), ...missingSaved] : (data?.events || []);
-    const result = pool.filter(event =>
-      (view !== 'saved' || saved.includes(event.id)) &&
-      (source === 'All sources' || event.source === source) &&
-      (category === 'All types' || event.tags?.includes(category)) &&
-      (price === 'Any price' || event.price === price) &&
-      (date !== 'Tonight' || event.timeKnown) &&
-      (Number.isFinite(Date.parse(event.start)) && (event.timeKnown ? Date.parse(event.start) >= now : nyDateKey(event.start) >= nyDateKey(now))) &&
-      dateMatches(event.start, date, now) &&
-      (!text || `${event.title || ''} ${event.description || ''} ${event.organizer || ''} ${event.venue || ''} ${event.locality || ''} ${(event.tags || []).join(' ')}`.toLowerCase().includes(text))
-    );
-    if (sort === 'Best match') result.sort((a,b) => (a.recommendationRank ?? Infinity) - (b.recommendationRank ?? Infinity) || b.score - a.score || Date.parse(a.start) - Date.parse(b.start));
-    if (sort === 'Soonest') result.sort((a,b) => new Date(a.start) - new Date(b.start));
-    if (sort === 'Interest where shown') result.sort((a,b) => (b.popularity || 0) - (a.popularity || 0) || b.score - a.score);
-    return result;
-  }, [data, view, saved, missingSaved, source, category, date, price, sort, query, now]);
-  const savedCount = useMemo(() => {
-    return saved.filter(id => currentIds.has(id) || missingSaved.some(event => event.id === id)).length;
-  }, [saved, currentIds, missingSaved]);
-  const hasFilters = source !== 'All sources' || category !== 'All types' || date !== 'Any date' || price !== 'Any price' || query;
-  const failed = Object.entries(data?.status || {}).filter(([, value]) => value.pagesFailed > 0).map(([name]) => name);
-  const rateLimited = /rate limit|HTTP 429/i.test(data?.status?.Eventbrite?.error || '');
-  const updated = data?.updatedAt ? fmt(data.updatedAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-  const visibleEvents = events.slice(0, visibleCount);
-  const sourceStatus = Object.entries(data?.status || {});
+  const pool = useMemo(() => {
+    if (view !== 'saved') return data?.events || [];
+    const live = (data?.events || []).filter(event => saved.includes(event.id));
+    const missing = saved.map(id => snapshots[id]).filter(event => event && !currentIds.has(event.id));
+    return [...live, ...missing];
+  }, [view, data, saved, snapshots, currentIds]);
+  const events = useMemo(() => sortEvents(pool.filter(event => matches(event, filters, now)), filters.sort), [pool, filters, now]);
+  const typeCounts = useMemo(() => {
+    const base = pool.filter(event => matches(event, filters, now, 'type'));
+    return Object.fromEntries(TYPES.map(type => [type, base.filter(event => event.tags?.includes(type)).length]));
+  }, [pool, filters, now]);
+  const whenCounts = useMemo(() => {
+    const base = pool.filter(event => matches(event, filters, now, 'when'));
+    return Object.fromEntries(WHEN.map(([value]) => [value, base.filter(event => (value !== 'Tonight' || event.timeKnown) && dateMatches(event.start, value, now)).length]));
+  }, [pool, filters, now]);
+  const savedCount = useMemo(() => saved.filter(id => {
+    const event = currentIds.has(id) ? data.events.find(item => item.id === id) : snapshots[id];
+    return event && matches(event, DEFAULTS, now);
+  }).length, [saved, snapshots, currentIds, data, now]);
 
-  return <div className="site">
-    <a className="skip-link" href="#main-content">Skip to events</a>
-    <header className="site-header"><div className="header-inner"><a className="wordmark" href="/" onClick={e => { e.preventDefault(); changeView('explore'); clearFilters(); }}>citysignal<span>.</span></a><span className="city-name">A better night starts here. / NYC</span><nav aria-label="Main navigation"><button className={view === 'explore' ? 'active' : ''} onClick={() => changeView('explore')} aria-current={view === 'explore' ? 'page' : undefined}><Compass className="nav-icon" size={18} /><span className="nav-copy">Explore</span></button><button className={view === 'saved' ? 'active' : ''} onClick={() => changeView('saved')} aria-current={view === 'saved' ? 'page' : undefined}><Bookmark className="nav-icon" size={18} /><span className="nav-copy">Saved <span className="nav-count">{savedCount}</span></span></button></nav></div></header>
-    <main className="content" id="main-content">
-      <section className="page-heading"><div><h1 ref={headingRef} tabIndex="-1">{view === 'saved' ? 'Plans worth keeping.' : 'Go where the city is.'}</h1><p>{view === 'saved' ? 'Your saved plans, kept in this browser.' : 'The best of what’s happening around New York, all in one place.'}</p></div><div className="scan-info">{updated && <span>Updated {updated} ET</span>}<button onClick={() => load(true)} disabled={refreshing || loading}><RefreshCw size={15} className={refreshing ? 'spinning' : ''} />{refreshing ? 'Checking…' : 'Refresh listings'}</button></div></section>
-      <section className="find-section" aria-label="Find events">
-        <div className="search-field"><Search size={20} aria-hidden="true" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search events, neighborhoods, or hosts" aria-label="Search events" />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={18} /></button>}</div>
-        <div className="quick-dates" aria-label="Quick date filters"><span>Looking for</span>{QUICK_DATES.map(option => <button key={option} type="button" className={date === option ? 'selected' : ''} aria-pressed={date === option} onClick={() => { setDate(date === option ? 'Any date' : option); if (date !== option) setSort('Soonest'); }}>{option}</button>)}</div>
-        <div className="filter-row"><label><span>Source</span><select value={source} onChange={e => setSource(e.target.value)}>{SOURCES.map(x => <option key={x}>{x}</option>)}</select><ChevronDown size={15} /></label><label><span>Type</span><select value={category} onChange={e => setCategory(e.target.value)}>{TYPES.map(x => <option key={x}>{x}</option>)}</select><ChevronDown size={15} /></label><label><span>When</span><select value={date} onChange={e => setDate(e.target.value)}>{DATES.map(x => <option key={x}>{x}</option>)}</select><ChevronDown size={15} /></label><label><span>Price</span><select value={price} onChange={e => setPrice(e.target.value)}>{PRICES.map(x => <option key={x}>{x}</option>)}</select><ChevronDown size={15} /></label><label><span>Sort</span><select value={sort} onChange={e => setSort(e.target.value)}><option>Best match</option><option>Soonest</option><option>Interest where shown</option></select><ChevronDown size={15} /></label></div>
-      </section>
-      <div className="results-heading"><div><h2>{view === 'saved' ? 'Saved plans' : 'The shortlist'}</h2><span aria-live="polite">{loading && !data ? 'Loading events' : events.length === 1 ? '1 event' : `${events.length} events`}</span></div><div className="results-actions"><button className={compact ? 'active' : ''} onClick={() => setCompact(value => !value)} aria-pressed={compact}>{compact ? 'Detailed view' : 'Compact view'}</button>{hasFilters && <button onClick={clearFilters}>Clear filters</button>}</div></div>
-      {hasFilters && <div className="applied-filters" aria-label="Active filters">{query && <button onClick={() => setQuery('')}>Search: {query} <X size={13} /></button>}{date !== 'Any date' && <button onClick={() => setDate('Any date')}>{date} <X size={13} /></button>}{category !== 'All types' && <button onClick={() => setCategory('All types')}>{category} <X size={13} /></button>}{price !== 'Any price' && <button onClick={() => setPrice('Any price')}>{price} <X size={13} /></button>}{source !== 'All sources' && <button onClick={() => setSource('All sources')}>{source} <X size={13} /></button>}</div>}
-      {sourceStatus.length > 0 && <details className="coverage"><summary>Source coverage: {sourceStatus.filter(([, status]) => status.pagesFailed === 0).length} of {sourceStatus.length} fully checked</summary><div>{sourceStatus.map(([name, status]) => <span key={name}>{name}: {status.count ?? 0} listings{status.pagesFailed > 0 ? `, ${status.pagesFailed} page${status.pagesFailed === 1 ? '' : 's'} unavailable` : ''}</span>)}</div></details>}
-      {(failed.length > 0 || data?.stale) && <div className="notice">{rateLimited ? 'Eventbrite is busy right now, so some of those listings may be missing. The others are here. Try Refresh in a little while.' : failed.length > 0 ? `Couldn’t reach every ${failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`} page, so a few events may be missing.` : 'This is an earlier list. Refresh when you want a newer one.'}</div>}
-      {error && data && <div className="notice">The list didn’t load. Check your connection and try again. <button onClick={() => load(true)}>Try again</button></div>}
-      {error && !data && <div className="empty-state"><h2>Couldn’t load events</h2><p>Check your connection and try again.</p><button onClick={() => load()}>Try again</button></div>}
-      {loading && !data && <div className="loading-state">Checking what’s on in New York…</div>}
-      {!loading && !error && !events.length && <div className="empty-state"><h2>{view === 'saved' && !saved.length ? 'No saved plans yet.' : hasFilters ? 'No events match these filters.' : view === 'saved' ? 'No upcoming saved plans.' : 'No events are available right now.'}</h2><p>{view === 'saved' && !saved.length ? 'Save an event to keep it in this browser.' : hasFilters ? 'Try a different date, type, source, or search.' : view === 'saved' ? 'Upcoming saved events will appear here.' : 'The scan may be incomplete. Refresh to check again.'}</p><button onClick={() => { if (hasFilters) clearFilters(); else if (view === 'saved') changeView('explore'); else load(true); }}>{hasFilters ? 'Clear filters' : view === 'saved' ? 'Browse events' : 'Refresh listings'}</button></div>}
-      {events.length > 0 && <div className="event-list">{visibleEvents.map(event => <EventRow key={event.id} event={event} saved={saved.includes(event.id)} onSave={toggleSave} unavailable={view === 'saved' && !currentIds.has(event.id)} compact={compact} />)}</div>}
-      {events.length > visibleCount && <button className="load-more" onClick={() => setVisibleCount(n => n + 30)}>Show {Math.min(30, events.length - visibleCount)} more</button>}
-      <footer><p>Public listings from Luma, Partiful, Eventbrite, and NYC Parks. Details change, so open the original page before you go.</p><details><summary>Why this order?</summary><p>Best match leads with mixers and social events, then events people are already interested in. A company name means it was mentioned, not that they officially host it. This is the public events we can find, not every event on each site.</p></details></footer>
+  const shown = events.slice(0, visible);
+  const grouped = filters.sort === 'Soonest';
+  const groups = useMemo(() => {
+    if (!grouped) return [];
+    const out = [];
+    for (const event of shown) {
+      const key = nyDateKey(event.start);
+      if (out.at(-1)?.key !== key) out.push({ key, items: [] });
+      out.at(-1).items.push(event);
+    }
+    return out;
+  }, [grouped, shown]);
+
+  const activeChips = [
+    filters.q && ['q', `“${filters.q}”`],
+    filters.when !== 'Any date' && ['when', filters.when],
+    filters.type && ['type', filters.type],
+    filters.source && ['source', filters.source],
+    filters.price && ['price', filters.price],
+  ].filter(Boolean);
+  const moreCount = [filters.source, filters.price].filter(Boolean).length;
+  const sources = Object.entries(data?.status || {});
+  const failed = sources.filter(([, status]) => status.pagesFailed > 0).map(([name]) => name);
+  const updated = data?.updatedAt ? fmt(data.updatedAt, { hour: 'numeric', minute: '2-digit' }) : '';
+  const card = event => <li key={event.id}><EventCard event={event} saved={saved.includes(event.id)} onSave={toggleSave} showDate={!grouped} stale={view === 'saved' && !currentIds.has(event.id)} /></li>;
+
+  return <div className="app">
+    <a className="skip-link" href="#results">Skip to results</a>
+    <header className="topbar" ref={topbarRef}>
+      <div className="topbar-inner">
+        <a className="brand" href="/" onClick={e => { e.preventDefault(); clearFilters(); changeView('explore'); }}>citysignal<span>NYC</span></a>
+        <label className="search">
+          <Search size={18} aria-hidden="true" />
+          <span className="visually-hidden">Search events</span>
+          <input ref={searchRef} type="search" value={filters.q} onChange={e => set('q', e.target.value)} placeholder="Search events, venues, hosts…" enterKeyHint="search" />
+          {filters.q ? <button type="button" className="search-clear" onClick={() => { set('q', ''); searchRef.current?.focus(); }} aria-label="Clear search"><X size={16} /></button> : <kbd aria-hidden="true">/</kbd>}
+        </label>
+        <nav className="tabs" aria-label="Main">
+          <button type="button" className={view === 'explore' ? 'is-on' : ''} aria-current={view === 'explore' ? 'page' : undefined} onClick={() => changeView('explore')}>Explore</button>
+          <button type="button" className={view === 'saved' ? 'is-on' : ''} aria-current={view === 'saved' ? 'page' : undefined} onClick={() => changeView('saved')}><Bookmark size={16} aria-hidden="true" />Saved{savedCount > 0 && <span className="tab-count">{savedCount}</span>}</button>
+        </nav>
+      </div>
+    </header>
+
+    <div className="filters" role="region" aria-label="Filters">
+      <div className="filters-inner">
+        <div className="chip-row" role="group" aria-label="When">
+          {WHEN.map(([value, label]) => <Chip key={value} selected={filters.when === value} count={value === 'Any date' ? undefined : whenCounts[value]} onClick={() => { set('when', value); if (value !== 'Any date' && filters.sort === 'Best match') set('sort', 'Soonest'); }}>{label}</Chip>)}
+          <span className="chip-divider" aria-hidden="true" />
+          <button type="button" className={`chip chip-more${showMore || moreCount ? ' is-on' : ''}`} aria-expanded={showMore} aria-controls="more-filters" onClick={() => setShowMore(open => !open)}><SlidersHorizontal size={15} aria-hidden="true" />Filters{moreCount > 0 && <span className="chip-count">{moreCount}</span>}</button>
+        </div>
+        <div className="chip-row" role="group" aria-label="Type">
+          {TYPES.map(type => <Chip key={type} selected={filters.type === type} count={typeCounts[type]} onClick={() => toggle('type', type)}>{type}</Chip>)}
+        </div>
+        {showMore && <div className="more" id="more-filters">
+          <label><span>Source</span><select value={filters.source} onChange={e => set('source', e.target.value)}><option value="">All sources</option>{SOURCES.map(x => <option key={x}>{x}</option>)}</select></label>
+          <label><span>Price</span><select value={filters.price} onChange={e => set('price', e.target.value)}><option value="">Any price</option><option>Free</option><option>Paid</option></select></label>
+          <label><span>Sort by</span><select value={filters.sort} onChange={e => set('sort', e.target.value)}>{SORTS.map(x => <option key={x}>{x}</option>)}</select></label>
+        </div>}
+      </div>
+    </div>
+
+    <main className="main" id="results">
+      <div className="results-head">
+        <div>
+          <h1 ref={headingRef} tabIndex="-1">{view === 'saved' ? 'Saved' : filters.when === 'Any date' ? 'Upcoming in NYC' : `${WHEN.find(([value]) => value === filters.when)[1]} in NYC`}</h1>
+          <p className="status" aria-live="polite">
+            {loading && !data ? 'Loading events…' : `${events.length.toLocaleString()} ${events.length === 1 ? 'event' : 'events'}`}
+            {grouped ? ' · soonest first' : filters.sort === 'Best match' ? ' · best matches first' : ' · most interest first'}
+          </p>
+        </div>
+        <div className="scan">
+          {updated && <span>Updated {updated}</span>}
+          <button type="button" className="text-btn" onClick={() => load(true)} disabled={refreshing || loading}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{refreshing ? 'Refreshing…' : 'Refresh'}</button>
+        </div>
+      </div>
+
+      {activeChips.length > 0 && <div className="applied" aria-label="Active filters">
+        {activeChips.map(([key, label]) => <button key={key} type="button" className="applied-chip" onClick={() => set(key, DEFAULTS[key])} aria-label={`Remove filter ${label}`}>{label}<X size={14} aria-hidden="true" /></button>)}
+        {activeChips.length > 1 && <button type="button" className="text-btn" onClick={clearFilters}>Clear all</button>}
+      </div>}
+
+      {(failed.length > 0 || data?.stale) && <p className="notice" role="status"><Info size={16} aria-hidden="true" />{failed.length ? `Some ${failed.join(', ')} pages couldn’t be reached, so a few events may be missing.` : 'Showing an earlier list.'} <button type="button" className="text-btn" onClick={() => load(true)}>Try refresh</button></p>}
+      {error && data && <p className="notice" role="alert"><Info size={16} aria-hidden="true" />Couldn’t update the list. <button type="button" className="text-btn" onClick={() => load(true)}>Try again</button></p>}
+
+      {loading && !data && <ul className="list" aria-hidden="true">{Array.from({ length: 6 }, (_, i) => <li key={i}><div className="card skeleton"><div className="thumb" /><div className="card-body"><i /><i /><i /></div></div></li>)}</ul>}
+      {error && !data && <div className="empty"><h2>Couldn’t load events</h2><p>Check your connection, then try again.</p><button type="button" className="btn" onClick={() => load()}>Try again</button></div>}
+      {data && !events.length && <div className="empty">
+        {view === 'saved' && !saved.length
+          ? <><Bookmark size={28} aria-hidden="true" /><h2>Nothing saved yet</h2><p>Tap the bookmark on any event to keep it here. Saves stay in this browser.</p><button type="button" className="btn" onClick={() => changeView('explore')}>Browse events</button></>
+          : activeChips.length
+            ? <><h2>No events match</h2><p>Try removing a filter{filters.when !== 'Any date' ? ' or widening the date' : ''}.</p><button type="button" className="btn" onClick={clearFilters}>Clear all filters</button></>
+            : <><h2>No upcoming events</h2><p>{view === 'saved' ? 'Your saved events have all passed.' : 'The scan may be incomplete.'}</p><button type="button" className="btn" onClick={() => view === 'saved' ? changeView('explore') : load(true)}>{view === 'saved' ? 'Browse events' : 'Refresh'}</button></>}
+      </div>}
+
+      {events.length > 0 && (grouped
+        ? groups.map(group => { const label = dayLabel(group.key, now); return <section key={group.key} className="day" aria-label={`${label.title}, ${label.sub}`}><h2 className="day-head"><span>{label.title}</span> {label.sub}</h2><ul className="list">{group.items.map(card)}</ul></section>; })
+        : <ul className="list">{shown.map(card)}</ul>)}
+      {events.length > visible && <div className="more-wrap"><p>Showing {visible} of {events.length.toLocaleString()}</p><button type="button" className="btn btn-quiet" onClick={() => setVisible(n => n + PAGE)}>Show more</button></div>}
+
+      <footer className="foot">
+        <p>Public listings from {SOURCES.join(', ')}. Details change — confirm on the original page before you go.</p>
+        {sources.length > 0 && <details><summary>Sources and ranking</summary>
+          <ul>{sources.map(([name, status]) => <li key={name}>{name}: {status.count ?? 0} listings{status.pagesFailed ? ` (${status.pagesFailed} page${status.pagesFailed === 1 ? '' : 's'} unavailable)` : ''}</li>)}</ul>
+          <p>Best match favors mixers and social events, then events people already show interest in. A company name means the listing mentions it, not that the company hosts it.</p>
+        </details>}
+      </footer>
     </main>
+
+    <div className="toast-region" aria-live="polite">
+      {toast && <div className="toast"><span>{toast.message}</span>{toast.undo && <button type="button" onClick={() => { toast.undo(); setToast(null); }}>Undo</button>}</div>}
+    </div>
   </div>;
 }
 

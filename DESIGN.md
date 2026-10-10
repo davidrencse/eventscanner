@@ -1,22 +1,21 @@
 # Citysignal visual system
 
-Citysignal is a monochrome NYC event guide. The interface helps someone decide where and when to go in a few seconds while keeping source and coverage limits clear. It uses a bold masthead, open search controls, and an editorial calendar list. Avoid imagery, scores, color coding, enclosing cards, or unsupported claims about hosts and popularity.
+Citysignal is an NYC event finder. The interface is built so someone can answer "what should I go to?" in a few seconds, then act (save, get directions, open the listing).
 
-## Palette and type
+## Principles applied
 
-- Page: near black `#0d0d0e`; ink: warm white `#f5f4f0`.
-- Secondary text: `#c8c7c2`; quiet text: `#aaa9a4`; rules: `#3b3b3b`.
-- Selection is shown through text and a short underline, without a filled box.
-- Archivo is used for the wordmark, page title, section headings, and event names. DM Sans carries controls, details, and body text.
+- **Content first.** No hero banner: the first result sits above the fold on a 390×844 phone and a 1280×800 laptop.
+- **Show options instead of making people remember them.** Date and type are always-visible chips, not dropdowns. Less common controls (source, price, sort) sit behind a Filters button.
+- **Feedback before commitment.** Each chip shows how many events it would return, and chips that would return none are disabled, so people avoid dead ends.
+- **Error recovery.** Every active filter shows as a removable chip with "Clear all". Saving or unsaving shows a toast with Undo. Empty states name the cause and offer one clear next step.
+- **Large targets (Fitts's law).** The whole card opens the listing. Actions are labeled text-plus-icon buttons at least 44px tall.
+- **Consistency and standards.** Filters live in the URL, so Back, reload, and shared links keep the view. `/` focuses search.
+- **Scannability.** With "Soonest" sorting, events are grouped under sticky day headings ("Today", "Tomorrow", "Wednesday"). Time is the first line of each card, in the accent color.
 
-## Structure
+## Tokens
 
-The masthead names the city experience and shows the last scan time. The search area uses horizontal rules and whitespace instead of an enclosing panel. A broad text field leads, followed by immediate date choices for Tonight, This weekend, and Next 7 days. Source, type, date, price, and sort remain standard select controls with underline affordances. Active filters appear as removable text links above the results.
+Light and dark themes follow the system setting. Neutral warm greys, one blue accent (`--accent`), and semantic badge colors: green for Free, amber for low availability, red for sold out or waitlist. Archivo is used for headings and titles; DM Sans for everything else.
 
-Each event row is a plan at a glance: a large unboxed date, source and factual tags, title, time and venue, then optional summary and known organizer. Hairline rules separate rows. Actions are labeled Directions, Save, and On [source]. A compact view hides summaries for fast scanning. Known Free/Paid and availability labels are shown without inferring missing prices.
+## Card anatomy
 
-The results area reports count and source coverage. Coverage expands to show per-source listing counts and unavailable pages. Saved events store a small browser snapshot so a future event can remain visible when it drops from the latest scan; those rows tell people to check the original listing.
-
-## Adaptation and states
-
-At phone widths the header becomes a bottom Explore/Saved tab bar and filters form a two-column grid. The date choices scroll horizontally. The site retains loading, partial-source, error, no-results, and saved-empty states. Controls have visible keyboard focus, a skip link, result-count announcements, and at least 44px touch targets for event actions.
+Thumbnail (or initial if there's no image) → time and badges → title → venue → two-line summary (desktop only) → source and tags → host (one line) → Save · Map · Open on [source].
