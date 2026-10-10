@@ -12,7 +12,7 @@ Delegated: React, Vite, and a small Node server. The user asked me to choose the
 
 ## Users
 
-People in New York City looking for worthwhile upcoming events across Luma, Partiful, Eventbrite, and NYC Parks, with mixers and social events as the top preference.
+People in New York City looking for worthwhile upcoming events across Luma, Partiful, and NYC Parks, with mixers and social events as the top preference.
 
 ## Product Purpose
 

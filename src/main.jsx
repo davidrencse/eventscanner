@@ -4,7 +4,7 @@ import { ArrowUpRight, Bookmark, ChevronDown, Compass, MapPin, RefreshCw, Search
 import { dateMatches, nyDateKey } from './dates.js';
 import './styles.css';
 
-const SOURCES = ['All sources', 'Luma', 'Partiful', 'Eventbrite', 'NYC Parks'];
+const SOURCES = ['All sources', 'Luma', 'Partiful', 'NYC Parks'];
 const TYPES = ['All types', 'Mixers', 'Tech', 'Big names', 'Arts & culture', 'Food & drink', 'Music & nightlife', 'Wellness', 'Business'];
 const DATES = ['Any date', 'Tonight', 'Today', 'Tomorrow', 'This weekend', 'Next 7 days'];
 const PRICES = ['Any price', 'Free', 'Paid'];
@@ -161,7 +161,6 @@ function App() {
   }, [saved, currentIds, missingSaved]);
   const hasFilters = source !== 'All sources' || category !== 'All types' || date !== 'Any date' || price !== 'Any price' || query;
   const failed = Object.entries(data?.status || {}).filter(([, value]) => value.pagesFailed > 0).map(([name]) => name);
-  const rateLimited = /rate limit|HTTP 429/i.test(data?.status?.Eventbrite?.error || '');
   const updated = data?.updatedAt ? fmt(data.updatedAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
   const visibleEvents = events.slice(0, visibleCount);
   const sourceStatus = Object.entries(data?.status || {});
@@ -179,14 +178,14 @@ function App() {
       <div className="results-heading"><div><h2>{view === 'saved' ? 'Saved plans' : 'The shortlist'}</h2><span aria-live="polite">{loading && !data ? 'Loading events' : events.length === 1 ? '1 event' : `${events.length} events`}</span></div><div className="results-actions"><button className={compact ? 'active' : ''} onClick={() => setCompact(value => !value)} aria-pressed={compact}>{compact ? 'Detailed view' : 'Compact view'}</button>{hasFilters && <button onClick={clearFilters}>Clear filters</button>}</div></div>
       {hasFilters && <div className="applied-filters" aria-label="Active filters">{query && <button onClick={() => setQuery('')}>Search: {query} <X size={13} /></button>}{date !== 'Any date' && <button onClick={() => setDate('Any date')}>{date} <X size={13} /></button>}{category !== 'All types' && <button onClick={() => setCategory('All types')}>{category} <X size={13} /></button>}{price !== 'Any price' && <button onClick={() => setPrice('Any price')}>{price} <X size={13} /></button>}{source !== 'All sources' && <button onClick={() => setSource('All sources')}>{source} <X size={13} /></button>}</div>}
       {sourceStatus.length > 0 && <details className="coverage"><summary>Source coverage: {sourceStatus.filter(([, status]) => status.pagesFailed === 0).length} of {sourceStatus.length} fully checked</summary><div>{sourceStatus.map(([name, status]) => <span key={name}>{name}: {status.count ?? 0} listings{status.pagesFailed > 0 ? `, ${status.pagesFailed} page${status.pagesFailed === 1 ? '' : 's'} unavailable` : ''}</span>)}</div></details>}
-      {(failed.length > 0 || data?.stale) && <div className="notice">{rateLimited ? 'Eventbrite is busy right now, so some of those listings may be missing. The others are here. Try Refresh in a little while.' : failed.length > 0 ? `Couldn’t reach every ${failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`} page, so a few events may be missing.` : 'This is an earlier list. Refresh when you want a newer one.'}</div>}
+      {(failed.length > 0 || data?.stale) && <div className="notice">{failed.length > 0 ? `Couldn’t reach every ${failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`} page, so a few events may be missing.` : 'This is an earlier list. Refresh when you want a newer one.'}</div>}
       {error && data && <div className="notice">The list didn’t load. Check your connection and try again. <button onClick={() => load(true)}>Try again</button></div>}
       {error && !data && <div className="empty-state"><h2>Couldn’t load events</h2><p>Check your connection and try again.</p><button onClick={() => load()}>Try again</button></div>}
       {loading && !data && <div className="loading-state">Checking what’s on in New York…</div>}
       {!loading && !error && !events.length && <div className="empty-state"><h2>{view === 'saved' && !saved.length ? 'No saved plans yet.' : hasFilters ? 'No events match these filters.' : view === 'saved' ? 'No upcoming saved plans.' : 'No events are available right now.'}</h2><p>{view === 'saved' && !saved.length ? 'Save an event to keep it in this browser.' : hasFilters ? 'Try a different date, type, source, or search.' : view === 'saved' ? 'Upcoming saved events will appear here.' : 'The scan may be incomplete. Refresh to check again.'}</p><button onClick={() => { if (hasFilters) clearFilters(); else if (view === 'saved') changeView('explore'); else load(true); }}>{hasFilters ? 'Clear filters' : view === 'saved' ? 'Browse events' : 'Refresh listings'}</button></div>}
       {events.length > 0 && <div className="event-list">{visibleEvents.map(event => <EventRow key={event.id} event={event} saved={saved.includes(event.id)} onSave={toggleSave} unavailable={view === 'saved' && !currentIds.has(event.id)} compact={compact} />)}</div>}
       {events.length > visibleCount && <button className="load-more" onClick={() => setVisibleCount(n => n + 30)}>Show {Math.min(30, events.length - visibleCount)} more</button>}
-      <footer><p>Public listings from Luma, Partiful, Eventbrite, and NYC Parks. Details change, so open the original page before you go.</p><details><summary>Why this order?</summary><p>Best match leads with mixers and social events, then events people are already interested in. A company name means it was mentioned, not that they officially host it. This is the public events we can find, not every event on each site.</p></details></footer>
+      <footer><p>Public listings from Luma, Partiful, and NYC Parks. Details change, so open the original page before you go.</p><details><summary>Why this order?</summary><p>Best match leads with mixers and social events, then events people are already interested in. A company name means it was mentioned, not that they officially host it. This is the public events we can find, not every event on each site.</p></details></footer>
     </main>
   </div>;
 }

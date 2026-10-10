@@ -1,6 +1,6 @@
 # Citysignal NYC
 
-A live NYC event dashboard for public listings on Luma, Partiful, Eventbrite, and NYC Parks. It ranks upcoming events with a preference for mixers and social gatherings, and labels events by source and topic.
+A live NYC event dashboard for public listings on Luma, Partiful, and NYC Parks. It ranks upcoming events with a preference for mixers and social gatherings, and labels events by source and topic.
 
 ## Run locally
 
@@ -38,7 +38,7 @@ The Oracle instance runs Citysignal from `/home/ubuntu/citysignal` using [deploy
 
 The Oracle network currently blocks public access to port 3001. To view the dashboard from your computer without changing cloud firewall rules, run `ssh -i PATH_TO_KEY -L 3001:127.0.0.1:3001 ubuntu@132.145.200.98` and open `http://localhost:3001`. To publish the site directly, allow the chosen HTTP port in the Oracle Cloud ingress rules and the instance firewall, then put HTTPS in front of the app.
 
-Eventbrite currently returns HTTP 405 from this Oracle instance. When any source fails, the server keeps its upcoming events from `data/events.json`, marks the result stale, and leaves the published snapshot intact. The other sources continue refreshing. `GITHUB_SYNC` is off on this host because no GitHub token is configured.
+Eventbrite was removed as a source because it returns HTTP 405 to both this Oracle instance and GitHub Actions. When any source fails, the server keeps its upcoming events from `data/events.json`, marks the result stale, and leaves the published snapshot intact. The other sources continue refreshing. `GITHUB_SYNC` is off on this host because no GitHub token is configured.
 
 ## Data and ranking
 
@@ -54,9 +54,9 @@ Run `npm run discover:luma` for a Luma-only shortlist in `.cache/luma-recommenda
 
 `.github/workflows/ci.yml` tests and builds changes. `.github/workflows/discovery.yml` runs discovery hourly and on manual dispatch, and uploads a seven-day shortlist artifact even when coverage is incomplete. These workflows become available after the code is pushed to GitHub with Actions enabled; scheduled runs use the default branch and may be delayed. They do not deploy the server or update the live dashboard. Public source blocking and incomplete catalogs mean the pipeline cannot guarantee every event or availability.
 
-- The scanner reads Luma's public NYC discovery feed (up to ten cursor pages of 50 events, with the city page as a fallback), Partiful's NYC Explore and Partilist pages, 28 bounded Eventbrite NYC city/category pages, and NYC Parks' public upcoming feed. The Parks scan starts at the current NYC date and skips selected high volume children's programs, Shape Up classes, and ongoing exhibits. It refreshes in the background every 15 minutes and when you click **Refresh**.
-- Only future-starting public events within 90 days and within New York City are shown. Eventbrite virtual listings are excluded using their structured location data. Listings from different pages are deduplicated. The scan is broad but is not a complete catalog of any platform.
-- Eventbrite's city listings often expose exact local start and end times plus short summaries in page data. The scanner uses those when available. Events with only a date say **Time on listing**.
+- The scanner reads Luma's public NYC discovery feed (up to ten cursor pages of 50 events, with the city page as a fallback), Partiful's NYC Explore and Partilist pages, and NYC Parks' public upcoming feed. The Parks scan starts at the current NYC date and skips selected high volume children's programs, Shape Up classes, and ongoing exhibits. It refreshes in the background every 15 minutes and when you click **Refresh**.
+- Only future-starting public events within 90 days and within New York City are shown. Listings from different pages are deduplicated. The scan is broad but is not a complete catalog of any platform.
+- Events with only a date say **Time on listing**.
 - Event rows show **Free** or **Paid** only when the public listing provides an explicit price. Otherwise they say **Check price**. The price filter includes only listings with a confirmed Free or Paid value.
 - Best match favors explicit mixers and networking events, then considers timing, Partiful interest counts when available, and tech or company mentions. Broad words such as “community” alone do not make an event a mixer. It is not a paid ranking or quality guarantee.
 - Company tags require the name in the event title or organizer, or an explicit hosting or partnership mention in the description. They do not verify a sponsor or host.

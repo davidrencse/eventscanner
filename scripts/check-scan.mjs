@@ -3,7 +3,7 @@ const response = await fetch(endpoint, { signal: AbortSignal.timeout(90000) });
 if (!response.ok) throw new Error(`Scanner returned HTTP ${response.status}`);
 const data = await response.json();
 if (!Array.isArray(data.events)) throw new Error('Scanner did not return an event list');
-const names = ['Luma', 'Partiful', 'Eventbrite', 'NYC Parks'];
+const names = ['Luma', 'Partiful', 'NYC Parks'];
 const counts = Object.fromEntries(names.map(name => [name, data.events.filter(event => event.source === name).length]));
 const ids = new Set();
 const now = Date.now();

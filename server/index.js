@@ -19,19 +19,11 @@ const SOURCES = [
   { name: 'Partiful', url: 'https://partiful.com/explore/NYC', parse: parsePartiful },
   { name: 'Partiful', url: 'https://partiful.com/explore/partilist', parse: parsePartiful },
   { name: 'NYC Parks', url: 'https://data.cityofnewyork.us/resource/w3wp-dpdi.json', kind: 'parks-api' },
-  ...['events', 'networking', 'technology--events', 'parties--events', 'art--events', 'music--events', 'food-and-drink--events', 'health--events'].flatMap((section, i) =>
-    Array.from({ length: i < 4 ? 5 : 2 }, (_, page) => ({
-      name: 'Eventbrite',
-      url: `https://www.eventbrite.com/d/ny--new-york/${section}/?page=${page + 1}`,
-      parse: parseEventbrite,
-    }))
-  ),
 ];
 let cache = null;
 let pending = null;
 let pendingIsForced = false;
 const pageCache = new Map();
-let eventbriteCooldownUntil = 0;
 const pipelineHealth = { running: false, lastStartedAt: null, lastCompletedAt: null, lastError: null, nextRunAt: null };
 let lastManualRefresh = 0;
 const nyDayFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -46,7 +38,6 @@ if (IS_MAIN) {
       for (const [url, snapshot] of saved.pages || []) {
         if (snapshot && Date.now() - snapshot.fetchedAt < CACHE_MAX_AGE && Array.isArray(snapshot.events)) pageCache.set(url, snapshot);
       }
-      eventbriteCooldownUntil = Number(saved.eventbriteCooldownUntil) || 0;
     }
   } catch { /* no usable snapshot yet */ }
 }
@@ -56,7 +47,7 @@ function saveCache() {
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     const temporary = `${CACHE_FILE}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify({ version: 1, cache, pages: [...pageCache], eventbriteCooldownUntil }));
+    fs.writeFileSync(temporary, JSON.stringify({ version: 1, cache, pages: [...pageCache] }));
     fs.renameSync(temporary, CACHE_FILE);
   } catch (error) {
     console.warn(`Could not save scan cache: ${error.message}`);
@@ -481,14 +472,7 @@ function isUpcoming(event, now = Date.now()) {
 async function fetchSource(source) {
   if (source.kind === 'luma-api') return fetchLumaFeed();
   if (source.kind === 'parks-api') return fetchParks();
-  if (source.name === 'Eventbrite' && Date.now() < eventbriteCooldownUntil) throw new Error('Eventbrite is temporarily rate limited');
   const response = await fetch(source.url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Citysignal/1.0; public-event-discovery)', 'Accept': 'text/html' }, signal: AbortSignal.timeout(18000) });
-  if (source.name === 'Eventbrite' && response.status === 429) {
-    const header = response.headers.get('retry-after');
-    const seconds = Number(header);
-    const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
-    eventbriteCooldownUntil = Date.now() + Math.min(CACHE_MAX_AGE, Math.max(15 * 60000, Number.isFinite(delay) ? delay : 0));
-  }
   if (!response.ok) {
     await discardBody(response);
     throw new Error(`HTTP ${response.status}`);
@@ -559,7 +543,6 @@ function resetScanCache() {
   pending = null;
   pendingIsForced = false;
   pageCache.clear();
-  eventbriteCooldownUntil = 0;
 }
 
 async function scan(force = false) {
