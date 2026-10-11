@@ -12,6 +12,10 @@ Citysignal is an NYC event finder. The interface is built so someone can answer 
 - **Consistency and standards.** Filters live in the URL, so Back, reload, and shared links keep the view. `/` focuses search.
 - **Scannability.** With "Soonest" sorting, events are grouped under sticky day headings ("Today", "Tomorrow", "Wednesday"). Time is the first line of each card, in the accent color.
 
+## Stack
+
+The UI is built with shadcn/ui (new-york style, zinc base, `components.json`): Tailwind CSS v4, `class-variance-authority`, Radix Slot and sonner toasts. Components live in `src/components/ui/`, and theme tokens are CSS variables in `src/styles.css`. Motion follows the style of animated shadcn kits such as Skiper UI and Watermelon UI: a spring-animated highlight slides between selected chips and nav tabs, cards fade and rise in sequence and lift on hover, the bookmark pops when saved, and the filter panel and applied-filter chips animate in and out. All animation respects `prefers-reduced-motion`.
+
 ## Tokens
 
 Light and dark themes follow the system setting. Neutral warm greys, one blue accent (`--accent`), and semantic badge colors: green for Free, amber for low availability, red for sold out or waitlist. Archivo is used for headings and titles; DM Sans for everything else.

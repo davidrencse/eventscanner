@@ -1,7 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowUpRight, Bookmark, Info, MapPin, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { Toaster, toast } from 'sonner';
 import { dateMatches, nyDateKey } from './dates.js';
+import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { NativeSelect } from '@/components/ui/native-select';
+import { Skeleton } from '@/components/ui/skeleton';
 import './styles.css';
 
 const SOURCES = ['Luma', 'Partiful', 'Eventbrite', 'NYC Parks'];
@@ -77,14 +85,14 @@ function sortEvents(list, sort) {
 function Thumb({ event }) {
   const [failed, setFailed] = useState(false);
   const initial = (event.title || '?').trim().charAt(0).toUpperCase();
-  return <div className="thumb" aria-hidden="true">
+  return <div className="relative aspect-square w-20 shrink-0 self-start overflow-hidden rounded-lg bg-muted sm:w-28" aria-hidden="true">
     {event.image && !failed
-      ? <img src={event.image} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-      : <span>{initial}</span>}
+      ? <img src={event.image} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} className="size-full object-cover transition-transform duration-500 group-hover:scale-105" />
+      : <span className="grid size-full place-items-center bg-gradient-to-br from-brand/25 to-brand/5 font-display text-3xl font-extrabold text-brand">{initial}</span>}
   </div>;
 }
 
-function EventCard({ event, saved, onSave, showDate, stale }) {
+function EventCard({ event, saved, onSave, showDate, stale, index }) {
   const time = event.timeKnown ? fmt(event.start, { hour: 'numeric', minute: '2-digit' }) : 'Time TBA';
   const date = fmt(event.start, { weekday: 'short', month: 'short', day: 'numeric' });
   const place = [event.venue, event.locality && event.locality !== event.venue ? event.locality : ''].filter(Boolean).join(', ');
@@ -92,37 +100,56 @@ function EventCard({ event, saved, onSave, showDate, stale }) {
   const spots = spotsLabel(event);
   const soldOut = event.spotsLeft === 0 || ['sold-out', 'waitlist', 'closed'].includes(event.availability);
   const tags = [...(event.tags || []).filter(tag => tag !== 'Big names' && tag !== 'Around town').slice(0, 2), ...(event.companies || []).slice(0, 2)];
-  return <article className="card">
+  return <motion.article
+    initial={{ opacity: 0, y: 12 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ duration: 0.3, delay: Math.min(index, 8) * 0.03, ease: 'easeOut' }}
+    whileHover={{ y: -2 }}
+    className="group relative flex gap-4 rounded-xl border bg-card p-3 text-card-foreground shadow-sm transition-[border-color,box-shadow] hover:border-foreground/20 hover:shadow-md sm:gap-5 sm:p-4"
+  >
     <Thumb event={event} />
-    <div className="card-body">
-      <p className="card-when">
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-brand">
         <time dateTime={event.start}>{showDate ? `${date} · ${time}` : time}</time>
-        {event.price === 'Free' && <span className="badge badge-good">Free</span>}
-        {spots && <span className={`badge ${soldOut ? 'badge-bad' : 'badge-warn'}`}>{spots}</span>}
-      </p>
-      <h3 className="card-title"><a href={event.url} target="_blank" rel="noopener noreferrer">{event.title}<span className="visually-hidden"> (opens {event.source} in a new tab)</span></a></h3>
-      {place && <p className="card-place"><MapPin size={14} aria-hidden="true" />{place}</p>}
-      {summary && <p className="card-summary">{summary}</p>}
-      <p className="card-meta">
-        <span className="source">via {event.source}</span>
-        {tags.map(tag => <span key={tag} className="tag">{tag}</span>)}
-      </p>
-      {event.organizer && <p className="card-host">Hosted by {event.organizer}</p>}
-      {stale && <p className="card-stale"><Info size={14} aria-hidden="true" />Not in the latest scan — check the listing before you go.</p>}
-      <div className="card-actions">
-        <button type="button" className={`icon-btn${saved ? ' is-on' : ''}`} onClick={() => onSave(event)} aria-pressed={saved} aria-label={`Save ${event.title}`}>
-          <Bookmark size={18} fill={saved ? 'currentColor' : 'none'} aria-hidden="true" /><span>{saved ? 'Saved' : 'Save'}</span>
-        </button>
-        {event.mapsUrl && <a className="icon-btn" href={event.mapsUrl} target="_blank" rel="noopener noreferrer" aria-label={`Directions to ${place || event.title}`}><MapPin size={18} aria-hidden="true" /><span>Map</span></a>}
-        <a className="icon-btn" href={event.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${event.title} on ${event.source}`}><ArrowUpRight size={18} aria-hidden="true" /><span>Open on {event.source}</span></a>
+        {event.price === 'Free' && <Badge variant="success">Free</Badge>}
+        {spots && <Badge variant={soldOut ? 'destructive' : 'warning'}>{spots}</Badge>}
+      </div>
+      <h3 className="font-display text-base font-bold leading-snug tracking-tight sm:text-lg [overflow-wrap:anywhere]">
+        {/* The title link covers the card so the whole card is one large target. */}
+        <a href={event.url} target="_blank" rel="noopener noreferrer" className="outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-[3px] focus-visible:after:ring-ring/50 hover:underline underline-offset-4">
+          {event.title}<span className="sr-only"> (opens {event.source} in a new tab)</span>
+        </a>
+      </h3>
+      {place && <p className="flex items-center gap-1.5 text-sm text-muted-foreground"><MapPin className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{place}</span></p>}
+      {summary && <p className="hidden text-sm leading-relaxed text-muted-foreground sm:line-clamp-2">{summary}</p>}
+      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+        <Badge variant="outline" className="font-semibold">{event.source}</Badge>
+        {tags.map(tag => <Badge key={tag} variant="secondary">{tag}</Badge>)}
+      </div>
+      {event.organizer && <p className="truncate text-xs text-muted-foreground">Hosted by {event.organizer}</p>}
+      {stale && <p className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400"><Info className="size-3.5" aria-hidden="true" />Not in the latest scan — check the listing before you go.</p>}
+      <div className="relative z-10 -ml-2 mt-1 flex flex-wrap gap-1">
+        <Button variant="ghost" size="sm" className={cn('h-10 sm:h-9', saved && 'text-brand')} onClick={() => onSave(event)} aria-pressed={saved} aria-label={`Save ${event.title}`}>
+          <motion.span key={String(saved)} initial={{ scale: 0.6 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 18 }} className="inline-flex">
+            <Bookmark fill={saved ? 'currentColor' : 'none'} aria-hidden="true" />
+          </motion.span>
+          {saved ? 'Saved' : 'Save'}
+        </Button>
+        {event.mapsUrl && <Button asChild variant="ghost" size="sm" className="h-10 sm:h-9"><a href={event.mapsUrl} target="_blank" rel="noopener noreferrer" aria-label={`Directions to ${place || event.title}`}><MapPin aria-hidden="true" />Map</a></Button>}
+        <Button asChild variant="ghost" size="sm" className="h-10 sm:h-9"><a href={event.url} target="_blank" rel="noopener noreferrer" aria-label={`Open ${event.title} on ${event.source}`}><ArrowUpRight aria-hidden="true" />Open on {event.source}</a></Button>
       </div>
     </div>
-  </article>;
+  </motion.article>;
 }
 
-function Chip({ selected, onClick, children, count }) {
-  return <button type="button" className={`chip${selected ? ' is-on' : ''}`} aria-pressed={selected} onClick={onClick} disabled={!selected && count === 0}>
-    {children}{count !== undefined && <span className="chip-count">{count}</span>}
+// Pill with a shared sliding highlight (motion layoutId), the signature effect of animated shadcn kits.
+function Chip({ selected, onClick, children, count, group }) {
+  return <button type="button" aria-pressed={selected} onClick={onClick} disabled={!selected && count === 0}
+    className={cn('relative inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-3.5 text-sm font-medium whitespace-nowrap outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40',
+      selected ? 'border-transparent text-primary-foreground' : 'bg-background hover:bg-accent dark:bg-input/30')}>
+    {selected && <motion.span layoutId={`chip-${group}`} className="absolute inset-0 rounded-full bg-primary" transition={{ type: 'spring', stiffness: 420, damping: 34 }} />}
+    <span className="relative">{children}</span>
+    {count !== undefined && <span className={cn('relative text-xs tabular-nums', selected ? 'text-primary-foreground/70' : 'text-muted-foreground')}>{count}</span>}
   </button>;
 }
 
@@ -138,12 +165,10 @@ function App() {
   const [visible, setVisible] = useState(PAGE);
   const [saved, setSaved] = useState(() => { const list = readStore('citysignal-saved', []); return Array.isArray(list) ? [...new Set(list.map(normalizeSavedId))] : []; });
   const [snapshots, setSnapshots] = useState(() => { const value = readStore('citysignal-saved-events', {}); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; });
-  const [toast, setToast] = useState(null);
   const [now, setNow] = useState(Date.now);
   const loadId = useRef(0);
   const headingRef = useRef(null);
   const searchRef = useRef(null);
-  const toastTimer = useRef(0);
   const topbarRef = useRef(null);
 
   useEffect(() => {
@@ -200,9 +225,7 @@ function App() {
   const clearFilters = () => setFilters(current => ({ ...DEFAULTS, sort: current.sort }));
 
   function showToast(message, undo) {
-    clearTimeout(toastTimer.current);
-    setToast({ message, undo });
-    toastTimer.current = setTimeout(() => setToast(null), 5000);
+    toast(message, { action: { label: 'Undo', onClick: undo }, duration: 5000 });
   }
   function toggleSave(event) {
     if (saved.includes(event.id)) {
@@ -274,95 +297,127 @@ function App() {
   const sources = Object.entries(data?.status || {});
   const failed = sources.filter(([, status]) => status.pagesFailed > 0).map(([name]) => name);
   const updated = data?.updatedAt ? fmt(data.updatedAt, { hour: 'numeric', minute: '2-digit' }) : '';
-  const card = event => <li key={event.id}><EventCard event={event} saved={saved.includes(event.id)} onSave={toggleSave} showDate={!grouped} stale={view === 'saved' && !currentIds.has(event.id)} /></li>;
+  const card = (event, index) => <li key={event.id}><EventCard index={index} event={event} saved={saved.includes(event.id)} onSave={toggleSave} showDate={!grouped} stale={view === 'saved' && !currentIds.has(event.id)} /></li>;
+  const container = 'mx-auto w-full max-w-4xl px-4 sm:px-6';
 
-  return <div className="app">
-    <a className="skip-link" href="#results">Skip to results</a>
-    <header className="topbar" ref={topbarRef}>
-      <div className="topbar-inner">
-        <a className="brand" href="/" onClick={e => { e.preventDefault(); clearFilters(); changeView('explore'); }}>citysignal<span>NYC</span></a>
-        <label className="search">
-          <Search size={18} aria-hidden="true" />
-          <span className="visually-hidden">Search events</span>
-          <input ref={searchRef} type="search" value={filters.q} onChange={e => set('q', e.target.value)} placeholder="Search events, venues, hosts…" enterKeyHint="search" />
-          {filters.q ? <button type="button" className="search-clear" onClick={() => { set('q', ''); searchRef.current?.focus(); }} aria-label="Clear search"><X size={16} /></button> : <kbd aria-hidden="true">/</kbd>}
+  return <div className="min-h-dvh">
+    <a href="#results" className="fixed left-3 top-[-60px] z-50 rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground focus:top-3">Skip to results</a>
+    <Toaster theme="system" position="bottom-center" toastOptions={{ classNames: { actionButton: '!h-9 !px-3 !text-sm' } }} />
+
+    <header ref={topbarRef} className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur-xl">
+      <div className={cn(container, 'flex flex-wrap items-center gap-x-4 gap-y-2 py-3 sm:h-16 sm:flex-nowrap sm:py-0')}>
+        <a href="/" onClick={e => { e.preventDefault(); clearFilters(); changeView('explore'); }} className="flex flex-1 items-baseline gap-1.5 font-display text-xl font-extrabold tracking-tight sm:flex-none">
+          citysignal<span className="text-xs font-bold tracking-wider text-brand">NYC</span>
+        </a>
+        <label className="relative order-3 w-full sm:order-none sm:flex-1">
+          <span className="sr-only">Search events</span>
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+          <Input ref={searchRef} type="search" value={filters.q} onChange={e => set('q', e.target.value)} placeholder="Search events, venues, hosts…" enterKeyHint="search" className="h-10 rounded-lg pl-9 pr-10" />
+          {filters.q
+            ? <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 size-8 -translate-y-1/2" onClick={() => { set('q', ''); searchRef.current?.focus(); }} aria-label="Clear search"><X /></Button>
+            : <kbd aria-hidden="true" className="absolute right-2.5 top-1/2 hidden -translate-y-1/2 rounded border bg-muted px-1.5 text-xs font-medium text-muted-foreground sm:block">/</kbd>}
         </label>
-        <nav className="tabs" aria-label="Main">
-          <button type="button" className={view === 'explore' ? 'is-on' : ''} aria-current={view === 'explore' ? 'page' : undefined} onClick={() => changeView('explore')}>Explore</button>
-          <button type="button" className={view === 'saved' ? 'is-on' : ''} aria-current={view === 'saved' ? 'page' : undefined} onClick={() => changeView('saved')}><Bookmark size={16} aria-hidden="true" />Saved{savedCount > 0 && <span className="tab-count">{savedCount}</span>}</button>
+        <nav aria-label="Main" className="relative flex rounded-lg bg-muted p-1">
+          {[['explore', 'Explore'], ['saved', 'Saved']].map(([key, label]) => <button key={key} type="button" onClick={() => changeView(key)} aria-current={view === key ? 'page' : undefined}
+            className={cn('relative inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50', view === key ? 'text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+            {view === key && <motion.span layoutId="nav-pill" className="absolute inset-0 rounded-md bg-background shadow-sm" transition={{ type: 'spring', stiffness: 420, damping: 34 }} />}
+            <span className="relative inline-flex items-center gap-1.5">{key === 'saved' && <Bookmark className="size-3.5" aria-hidden="true" />}{label}
+              {key === 'saved' && savedCount > 0 && <span className="min-w-5 rounded-full bg-brand px-1.5 text-center text-[11px] leading-5 text-white">{savedCount}</span>}</span>
+          </button>)}
         </nav>
       </div>
     </header>
 
-    <div className="filters" role="region" aria-label="Filters">
-      <div className="filters-inner">
-        <div className="chip-row" role="group" aria-label="When">
-          {WHEN.map(([value, label]) => <Chip key={value} selected={filters.when === value} count={value === 'Any date' ? undefined : whenCounts[value]} onClick={() => { set('when', value); if (value !== 'Any date' && filters.sort === 'Best match') set('sort', 'Soonest'); }}>{label}</Chip>)}
-          <span className="chip-divider" aria-hidden="true" />
-          <button type="button" className={`chip chip-more${showMore || moreCount ? ' is-on' : ''}`} aria-expanded={showMore} aria-controls="more-filters" onClick={() => setShowMore(open => !open)}><SlidersHorizontal size={15} aria-hidden="true" />Filters{moreCount > 0 && <span className="chip-count">{moreCount}</span>}</button>
+    <div className="hero-glow border-b" role="region" aria-label="Filters">
+      <div className={cn(container, 'flex flex-col gap-2.5 py-4')}>
+        <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 sm:-mx-6 sm:px-6" role="group" aria-label="When">
+          {WHEN.map(([value, label]) => <Chip key={value} group="when" selected={filters.when === value} count={value === 'Any date' ? undefined : whenCounts[value]} onClick={() => { set('when', value); if (value !== 'Any date' && filters.sort === 'Best match') set('sort', 'Soonest'); }}>{label}</Chip>)}
+          <span className="mx-1 my-1.5 w-px shrink-0 bg-border" aria-hidden="true" />
+          <Button variant={showMore || moreCount ? 'secondary' : 'outline'} className="h-9 shrink-0 rounded-full" aria-expanded={showMore} aria-controls="more-filters" onClick={() => setShowMore(open => !open)}>
+            <SlidersHorizontal aria-hidden="true" />Filters{moreCount > 0 && <span className="rounded-full bg-brand px-1.5 text-[11px] leading-5 text-white">{moreCount}</span>}
+          </Button>
         </div>
-        <div className="chip-row" role="group" aria-label="Type">
-          {TYPES.map(type => <Chip key={type} selected={filters.type === type} count={typeCounts[type]} onClick={() => toggle('type', type)}>{type}</Chip>)}
+        <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 sm:-mx-6 sm:px-6" role="group" aria-label="Type">
+          {TYPES.map(type => <Chip key={type} group="type" selected={filters.type === type} count={typeCounts[type]} onClick={() => toggle('type', type)}>{type}</Chip>)}
         </div>
-        {showMore && <div className="more" id="more-filters">
-          <label><span>Source</span><select value={filters.source} onChange={e => set('source', e.target.value)}><option value="">All sources</option>{SOURCES.map(x => <option key={x}>{x}</option>)}</select></label>
-          <label><span>Price</span><select value={filters.price} onChange={e => set('price', e.target.value)}><option value="">Any price</option><option>Free</option><option>Paid</option></select></label>
-          <label><span>Sort by</span><select value={filters.sort} onChange={e => set('sort', e.target.value)}>{SORTS.map(x => <option key={x}>{x}</option>)}</select></label>
-        </div>}
+        <AnimatePresence initial={false}>
+          {showMore && <motion.div id="more-filters" key="more" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+            <div className="grid grid-cols-2 gap-3 pt-2 sm:grid-cols-3">
+              <label className="flex flex-col gap-1.5 text-sm font-medium">Source<NativeSelect value={filters.source} onChange={e => set('source', e.target.value)}><option value="">All sources</option>{SOURCES.map(x => <option key={x}>{x}</option>)}</NativeSelect></label>
+              <label className="flex flex-col gap-1.5 text-sm font-medium">Price<NativeSelect value={filters.price} onChange={e => set('price', e.target.value)}><option value="">Any price</option><option>Free</option><option>Paid</option></NativeSelect></label>
+              <label className="col-span-2 flex flex-col gap-1.5 text-sm font-medium sm:col-span-1">Sort by<NativeSelect value={filters.sort} onChange={e => set('sort', e.target.value)}>{SORTS.map(x => <option key={x}>{x}</option>)}</NativeSelect></label>
+            </div>
+          </motion.div>}
+        </AnimatePresence>
       </div>
     </div>
 
-    <main className="main" id="results">
-      <div className="results-head">
+    <main id="results" className={cn(container, 'pb-24')}>
+      <div className="flex items-end justify-between gap-4 pb-4 pt-6">
         <div>
-          <h1 ref={headingRef} tabIndex="-1">{view === 'saved' ? 'Saved' : filters.when === 'Any date' ? 'Upcoming in NYC' : `${WHEN.find(([value]) => value === filters.when)[1]} in NYC`}</h1>
-          <p className="status" aria-live="polite">
+          <h1 ref={headingRef} tabIndex="-1" className="font-display text-2xl font-extrabold tracking-tight outline-none sm:text-3xl">
+            {view === 'saved' ? 'Saved' : filters.when === 'Any date' ? 'Upcoming in NYC' : `${WHEN.find(([value]) => value === filters.when)[1]} in NYC`}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground" aria-live="polite">
             {loading && !data ? 'Loading events…' : `${events.length.toLocaleString()} ${events.length === 1 ? 'event' : 'events'}`}
             {grouped ? ' · soonest first' : filters.sort === 'Best match' ? ' · best matches first' : ' · most interest first'}
           </p>
         </div>
-        <div className="scan">
-          {updated && <span>Updated {updated}</span>}
-          <button type="button" className="text-btn" onClick={() => load(true)} disabled={refreshing || loading}><RefreshCw size={14} className={refreshing ? 'spin' : ''} aria-hidden="true" />{refreshing ? 'Refreshing…' : 'Refresh'}</button>
+        <div className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground">
+          {updated && <span className="hidden sm:inline">Updated {updated}</span>}
+          <Button variant="outline" size="sm" onClick={() => load(true)} disabled={refreshing || loading}><RefreshCw className={cn(refreshing && 'animate-spin')} aria-hidden="true" />{refreshing ? 'Refreshing…' : 'Refresh'}</Button>
         </div>
       </div>
 
-      {activeChips.length > 0 && <div className="applied" aria-label="Active filters">
-        {activeChips.map(([key, label]) => <button key={key} type="button" className="applied-chip" onClick={() => set(key, DEFAULTS[key])} aria-label={`Remove filter ${label}`}>{label}<X size={14} aria-hidden="true" /></button>)}
-        {activeChips.length > 1 && <button type="button" className="text-btn" onClick={clearFilters}>Clear all</button>}
+      {activeChips.length > 0 && <div className="mb-4 flex flex-wrap items-center gap-2" aria-label="Active filters">
+        <AnimatePresence>{activeChips.map(([key, label]) => <motion.div key={key} layout initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}>
+          <Button variant="secondary" size="sm" className="rounded-full pr-2" onClick={() => set(key, DEFAULTS[key])} aria-label={`Remove filter ${label}`}>{label}<X aria-hidden="true" /></Button>
+        </motion.div>)}</AnimatePresence>
+        {activeChips.length > 1 && <Button variant="link" size="sm" onClick={clearFilters}>Clear all</Button>}
       </div>}
 
-      {(failed.length > 0 || data?.stale) && <p className="notice" role="status"><Info size={16} aria-hidden="true" />{failed.length ? `Some ${failed.join(', ')} pages couldn’t be reached, so a few events may be missing.` : 'Showing an earlier list.'} <button type="button" className="text-btn" onClick={() => load(true)}>Try refresh</button></p>}
-      {error && data && <p className="notice" role="alert"><Info size={16} aria-hidden="true" />Couldn’t update the list. <button type="button" className="text-btn" onClick={() => load(true)}>Try again</button></p>}
-
-      {loading && !data && <ul className="list" aria-hidden="true">{Array.from({ length: 6 }, (_, i) => <li key={i}><div className="card skeleton"><div className="thumb" /><div className="card-body"><i /><i /><i /></div></div></li>)}</ul>}
-      {error && !data && <div className="empty"><h2>Couldn’t load events</h2><p>Check your connection, then try again.</p><button type="button" className="btn" onClick={() => load()}>Try again</button></div>}
-      {data && !events.length && <div className="empty">
-        {view === 'saved' && !saved.length
-          ? <><Bookmark size={28} aria-hidden="true" /><h2>Nothing saved yet</h2><p>Tap the bookmark on any event to keep it here. Saves stay in this browser.</p><button type="button" className="btn" onClick={() => changeView('explore')}>Browse events</button></>
-          : activeChips.length
-            ? <><h2>No events match</h2><p>Try removing a filter{filters.when !== 'Any date' ? ' or widening the date' : ''}.</p><button type="button" className="btn" onClick={clearFilters}>Clear all filters</button></>
-            : <><h2>No upcoming events</h2><p>{view === 'saved' ? 'Your saved events have all passed.' : 'The scan may be incomplete.'}</p><button type="button" className="btn" onClick={() => view === 'saved' ? changeView('explore') : load(true)}>{view === 'saved' ? 'Browse events' : 'Refresh'}</button></>}
+      {(failed.length > 0 || data?.stale) && <div role="status" className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
+        <Info className="size-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+        {failed.length ? `Some ${failed.join(', ')} pages couldn’t be reached, so a few events may be missing.` : 'Showing an earlier list.'}
+        <Button variant="link" size="sm" className="px-1" onClick={() => load(true)}>Try refresh</Button>
       </div>}
+      {error && data && <div role="alert" className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm"><Info className="size-4 text-destructive" aria-hidden="true" />Couldn’t update the list.<Button variant="link" size="sm" className="h-auto p-0" onClick={() => load(true)}>Try again</Button></div>}
+
+      {loading && !data && <ul className="flex flex-col gap-3" aria-hidden="true">{Array.from({ length: 6 }, (_, i) => <li key={i} className="flex gap-4 rounded-xl border bg-card p-4"><Skeleton className="size-20 sm:size-28" /><div className="flex flex-1 flex-col gap-2 pt-1"><Skeleton className="h-4 w-1/4" /><Skeleton className="h-5 w-3/4" /><Skeleton className="h-4 w-1/2" /></div></li>)}</ul>}
+      {error && !data && <Empty title="Couldn’t load events" text="Check your connection, then try again." action="Try again" onAction={() => load()} />}
+      {data && !events.length && (view === 'saved' && !saved.length
+        ? <Empty icon={<Bookmark className="size-6" />} title="Nothing saved yet" text="Tap Save on any event to keep it here. Saves stay in this browser." action="Browse events" onAction={() => changeView('explore')} />
+        : activeChips.length
+          ? <Empty title="No events match" text={`Try removing a filter${filters.when !== 'Any date' ? ' or widening the date' : ''}.`} action="Clear all filters" onAction={clearFilters} />
+          : <Empty title="No upcoming events" text={view === 'saved' ? 'Your saved events have all passed.' : 'The scan may be incomplete.'} action={view === 'saved' ? 'Browse events' : 'Refresh'} onAction={() => view === 'saved' ? changeView('explore') : load(true)} />)}
 
       {events.length > 0 && (grouped
-        ? groups.map(group => { const label = dayLabel(group.key, now); return <section key={group.key} className="day" aria-label={`${label.title}, ${label.sub}`}><h2 className="day-head"><span>{label.title}</span> {label.sub}</h2><ul className="list">{group.items.map(card)}</ul></section>; })
-        : <ul className="list">{shown.map(card)}</ul>)}
-      {events.length > visible && <div className="more-wrap"><p>Showing {visible} of {events.length.toLocaleString()}</p><button type="button" className="btn btn-quiet" onClick={() => setVisible(n => n + PAGE)}>Show more</button></div>}
+        ? groups.map(group => { const label = dayLabel(group.key, now); return <section key={group.key} aria-label={`${label.title}, ${label.sub}`} className="mt-2">
+            <h2 className="sticky z-20 bg-background/90 py-3 text-sm font-medium text-muted-foreground backdrop-blur" style={{ top: 'var(--topbar-h, 64px)' }}><span className="mr-2 font-display text-lg font-extrabold tracking-tight text-foreground">{label.title}</span>{label.sub}</h2>
+            <ul className="flex flex-col gap-3">{group.items.map(card)}</ul>
+          </section>; })
+        : <ul className="flex flex-col gap-3">{shown.map(card)}</ul>)}
+      {events.length > visible && <div className="mt-6 flex flex-col items-center gap-2 text-sm text-muted-foreground"><p>Showing {visible} of {events.length.toLocaleString()}</p><Button variant="outline" size="lg" onClick={() => setVisible(n => n + PAGE)}>Show more</Button></div>}
 
-      <footer className="foot">
+      <footer className="mt-14 border-t pt-5 text-sm leading-relaxed text-muted-foreground">
         <p>Public listings from {SOURCES.join(', ')}. Details change — confirm on the original page before you go.</p>
-        {sources.length > 0 && <details><summary>Sources and ranking</summary>
-          <ul>{sources.map(([name, status]) => <li key={name}>{name}: {status.count ?? 0} listings{status.pagesFailed ? ` (${status.pagesFailed} page${status.pagesFailed === 1 ? '' : 's'} unavailable)` : ''}</li>)}</ul>
+        {sources.length > 0 && <details className="mt-2">
+          <summary className="w-max cursor-pointer font-medium text-foreground/80">Sources and ranking</summary>
+          <ul className="my-2">{sources.map(([name, status]) => <li key={name}>{name}: {status.count ?? 0} listings{status.pagesFailed ? ` (${status.pagesFailed} page${status.pagesFailed === 1 ? '' : 's'} unavailable)` : ''}</li>)}</ul>
           <p>Best match favors mixers and social events, then events people already show interest in. A company name means the listing mentions it, not that the company hosts it.</p>
         </details>}
       </footer>
     </main>
-
-    <div className="toast-region" aria-live="polite">
-      {toast && <div className="toast"><span>{toast.message}</span>{toast.undo && <button type="button" onClick={() => { toast.undo(); setToast(null); }}>Undo</button>}</div>}
-    </div>
   </div>;
+}
+
+function Empty({ icon, title, text, action, onAction }) {
+  return <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-16 text-center">
+    {icon && <div className="mb-1 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground" aria-hidden="true">{icon}</div>}
+    <h2 className="font-display text-xl font-bold">{title}</h2>
+    <p className="max-w-sm text-sm text-muted-foreground">{text}</p>
+    <Button className="mt-3" size="lg" onClick={onAction}>{action}</Button>
+  </motion.div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
